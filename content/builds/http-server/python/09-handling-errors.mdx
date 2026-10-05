@@ -1,0 +1,83 @@
+---
+title: Handling Errors
+description: Turn malformed input and unexpected failures into controlled HTTP responses.
+---
+
+Network input is untrusted and incomplete by nature. A useful server fails one connection without
+bringing down the accept loop.
+
+## Separate expected client errors
+
+Create a dedicated exception:
+
+```python title="server.py"
+class BadRequest(Exception):
+    pass
+```
+
+Raise `BadRequest` from parsing code when the request is incomplete or malformed. For example:
+
+```python
+def parse_request(data: bytes) -> Request:
+    head, separator, _body = data.partition(b"\r\n\r\n")
+    if not separator:
+        raise BadRequest("incomplete headers")
+
+    try:
+        lines = head.decode("iso-8859-1").split("\r\n")
+        method, target, version = lines[0].split(" ", 2)
+        headers = dict(line.split(":", 1) for line in lines[1:])
+    except (ValueError, UnicodeError) as error:
+        raise BadRequest("malformed request") from error
+
+    normalized = {name.strip().lower(): value.strip() for name, value in headers.items()}
+    return Request(method, target, version, normalized)
+```
+
+## Protect the connection handler
+
+Put one request behind a clear error boundary:
+
+```python title="server.py"
+def handle_connection(connection: socket.socket) -> None:
+    try:
+        request = parse_request(read_request(connection))
+        response = route(request)
+    except BadRequest as error:
+        response = make_response("400 Bad Request", f"{error}\n".encode())
+    except (OSError, ValueError) as error:
+        print(f"request failed: {error}")
+        response = make_response("500 Internal Server Error", b"server error\n")
+
+    try:
+        connection.sendall(response)
+    except OSError as error:
+        print(f"response failed: {error}")
+```
+
+Call it from the accept loop with `handle_connection(connection)`.
+
+<WhatHappened>
+Errors now have scope. A malformed request becomes `400`, a controlled server-side failure becomes
+`500`, and the outer accept loop remains available for the next connection.
+</WhatHappened>
+
+## Add a timeout
+
+Before reading, limit how long one client can occupy the sequential server:
+
+```python
+connection.settimeout(5)
+```
+
+Catch `TimeoutError` with other client failures and return `408 Request Timeout` when possible.
+
+<Warning>
+Do not include internal exception details in public `500` response bodies. Log enough context on the
+server, but return a stable generic message to the client.
+</Warning>
+
+<TryIt>
+Use netcat to connect without sending the terminating blank line. Confirm that the connection times
+out and that the server accepts a normal curl request afterward.
+</TryIt>

@@ -1,0 +1,73 @@
+---
+title: Opening a TCP Socket
+description: Create, bind and listen on the operating-system socket behind the server.
+---
+
+A server socket is a file-descriptor-like handle managed by the operating system. We configure it,
+bind it to an address, and ask the kernel to queue incoming connections.
+
+## Create the socket
+
+Replace `server.py` with:
+
+```python title="server.py"
+import socket
+
+HOST = "127.0.0.1"
+PORT = 8000
+
+
+def main() -> None:
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((HOST, PORT))
+    server.listen()
+
+    print(f"listening on http://{HOST}:{PORT}")
+    input("press Enter to stop")
+    server.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+`AF_INET` selects IPv4 addresses. `SOCK_STREAM` selects a reliable byte stream, which means TCP for
+this address family.
+
+## Bind an address
+
+`bind((HOST, PORT))` asks the operating system to deliver connections for that local endpoint to this
+socket. Only one active listener can normally own the same address and port at a time.
+
+`SO_REUSEADDR` makes local restarts less frustrating when an earlier connection is still passing
+through TCP's cleanup states. It does not allow arbitrary processes to share the listener.
+
+## Begin listening
+
+`listen()` turns the socket into a passive server socket. The kernel can now queue completed connection
+attempts until our program accepts them.
+
+<Note>
+Binding to `127.0.0.1` accepts only local connections. Binding to `0.0.0.0` listens on all IPv4
+interfaces and can expose the process to your network. Keep the loopback address for this tutorial.
+</Note>
+
+Run the program, then open a second terminal:
+
+```bash
+curl -v --max-time 2 http://127.0.0.1:8000/
+```
+
+The TCP connection can reach the socket, but curl times out because our process never accepts it and
+never sends an HTTP response.
+
+<WhatHappened>
+The kernel completed the TCP handshake and placed the connection in the listener's queue. `listen()`
+made arrival possible; it did not read or process the connection for us.
+</WhatHappened>
+
+<TryIt>
+Start a second copy of the server while the first is running. The second process should fail with
+“address already in use,” demonstrating that the endpoint is already owned.
+</TryIt>

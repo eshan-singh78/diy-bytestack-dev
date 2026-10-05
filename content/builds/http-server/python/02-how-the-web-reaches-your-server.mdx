@@ -1,0 +1,79 @@
+---
+title: How the Web Reaches Your Server
+description: Trace a request through DNS, TCP and HTTP before writing any networking code.
+---
+
+When you enter a URL, several systems cooperate before an application sees a request. Keeping their
+jobs separate will make the code in later chapters easier to reason about.
+
+## Start with a URL
+
+Consider this address:
+
+```text
+http://example.test:8000/hello?name=Ada
+```
+
+It contains a scheme (`http`), host (`example.test`), port (`8000`), path (`/hello`) and query string
+(`name=Ada`). The scheme tells the client which application protocol to speak.
+
+## DNS finds an address
+
+For a public hostname, the client usually asks DNS for an IP address. DNS answers a naming question;
+it does not send the HTTP request. In local development we use `127.0.0.1`, the IPv4 loopback address,
+so the traffic stays on your machine and DNS is unnecessary.
+
+## TCP creates a byte stream
+
+The client then opens a TCP connection to an IP-and-port pair. TCP provides an ordered, reliable byte
+stream. It does not know about HTTP methods, headers, JSON, or HTML.
+
+<Why>
+HTTP normally communicates over TCP, so we need a TCP socket before we can process HTTP. The socket
+is the operating-system object our process uses to access that stream.
+</Why>
+
+## HTTP gives the bytes meaning
+
+After the connection is established, the client sends bytes shaped like this:
+
+```http
+GET /hello?name=Ada HTTP/1.1
+Host: 127.0.0.1:8000
+User-Agent: curl/8.0
+```
+
+On the wire, each line ends with carriage-return and line-feed bytes, written as `\r\n`. A blank line
+ends the header section. The first line is the **request line**; the following lines are headers.
+
+Our response will follow the same broad pattern:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: text/plain; charset=utf-8
+Content-Length: 6
+Connection: close
+
+Hello!
+```
+
+<WhatHappened>
+DNS selected a machine, TCP created a reliable stream to one process port, and HTTP defined how both
+sides interpret the bytes. Each layer solves a different problem.
+</WhatHappened>
+
+## Observe a real request
+
+Later, while the server is running, use curl's verbose mode:
+
+```bash
+curl -v http://127.0.0.1:8000/hello
+```
+
+Lines prefixed with `>` are request data; lines prefixed with `<` are response data. Curl is an ideal
+client for this build because it exposes protocol details a browser normally hides.
+
+<TryIt>
+Run `curl -v https://example.com` against a real server. Identify the connection, request headers,
+status line and response headers. HTTPS adds TLS around the HTTP exchange, which our server will not implement.
+</TryIt>

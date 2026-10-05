@@ -1,0 +1,80 @@
+---
+title: Introduction
+description: See what we are building, what we are leaving out, and how to run the project.
+---
+
+An HTTP server can feel like a large piece of infrastructure. Its essential loop is surprisingly small:
+
+1. listen for a TCP connection;
+2. read bytes that describe a request;
+3. decide what those bytes mean;
+4. send response bytes; and
+5. close or reuse the connection.
+
+In this guide, you will implement that loop with Python's standard library. The finished server will
+recognize basic HTTP requests, route paths, serve a small file, and return useful errors.
+
+<Why>
+Frameworks hide the transport so you can focus on applications. We are going one layer lower—not
+because every team needs a server, but because sockets and protocols become concrete when you can
+watch their bytes move.
+</Why>
+
+## The boundary of our server
+
+We will build a learning-sized HTTP/1.x-style server. It will handle one request per connection and
+always respond with `Connection: close`. That keeps connection management visible and lets us focus
+on the protocol shape.
+
+It will **not** implement TLS, HTTP/2, request streaming, production-grade limits, or hardened parsing.
+Those features matter; they are deliberately outside this build.
+
+<Warning>
+Do not expose this server to the public internet or use it for untrusted traffic. Production servers
+have years of security and interoperability work behind them.
+</Warning>
+
+## Create the project
+
+Make a directory and a Python file:
+
+```bash title="Terminal"
+mkdir tiny-http-server
+cd tiny-http-server
+touch server.py
+```
+
+You need Python 3.11 or newer. Check your interpreter with:
+
+```bash
+python3 --version
+```
+
+We will run the server on port `8000`, so its local address will be
+[`http://127.0.0.1:8000`](http://127.0.0.1:8000).
+
+## A first placeholder
+
+Add a normal entry point to `server.py`:
+
+```python title="server.py"
+HOST = "127.0.0.1"
+PORT = 8000
+
+
+def main() -> None:
+    print(f"server will listen on http://{HOST}:{PORT}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Run it with `python3 server.py`. Nothing is listening yet, but the project has a stable place to grow.
+
+<TryIt>
+Change `PORT` to `8080` and run the program again. The port is part of an address; changing it means
+clients must connect to a different endpoint.
+</TryIt>
+
+Next, we will trace the route from a browser address to the bytes our Python process receives.

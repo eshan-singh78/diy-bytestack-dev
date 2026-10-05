@@ -1,0 +1,71 @@
+---
+title: Sending an HTTP Response
+description: Serialize a status line, headers and body into a valid response.
+---
+
+HTTP responses are bytes too. We will create the body first, calculate its exact byte length, then
+prepend the status line and headers.
+
+## Build the response
+
+Add this function:
+
+```python title="server.py"
+def make_response(
+    status: str,
+    body: bytes,
+    content_type: str = "text/plain; charset=utf-8",
+) -> bytes:
+    headers = [
+        f"HTTP/1.1 {status}",
+        f"Content-Type: {content_type}",
+        f"Content-Length: {len(body)}",
+        "Connection: close",
+        "",
+        "",
+    ]
+    head = "\r\n".join(headers).encode("ascii")
+    return head + body
+```
+
+The two empty strings produce the double line ending between headers and body. Header syntax is ASCII
+here, while the body can contain arbitrary bytes.
+
+<Why>
+`Content-Length` counts bytes, not Python characters. Encoding `"café"` as UTF-8 produces five bytes,
+even though the string contains four characters.
+</Why>
+
+## Send every byte
+
+Update the connection block:
+
+```python title="server.py"
+with connection:
+    raw_request = read_request(connection)
+    request = parse_request(raw_request)
+    body = f"Hello from {request.target}!\n".encode("utf-8")
+    response = make_response("200 OK", body)
+    connection.sendall(response)
+```
+
+`send()` may write only part of a buffer. `sendall()` keeps sending until all bytes are handed to the
+operating system or an error occurs.
+
+Run the server and then:
+
+```bash
+curl -i http://127.0.0.1:8000/hello
+```
+
+The `-i` flag includes response headers, so you can verify the status and length.
+
+<WhatHappened>
+Our process accepted a TCP stream, interpreted its first bytes as an HTTP request, produced HTTP
+response bytes and closed the stream. We now have the smallest complete server loop.
+</WhatHappened>
+
+<TryIt>
+Change the body to `"Hello, दुनिया!\n"`, keep UTF-8 encoding, and confirm that curl still receives the
+whole response. Compare `len(text)` with `len(text.encode("utf-8"))` in a Python shell.
+</TryIt>

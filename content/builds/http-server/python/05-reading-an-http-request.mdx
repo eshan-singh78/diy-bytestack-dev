@@ -1,0 +1,90 @@
+---
+title: Reading an HTTP Request
+description: Read through the header terminator and parse a minimal request line and header map.
+---
+
+Now we can receive bytes. The next job is to recognize the small part of HTTP our server understands.
+
+## Read complete headers
+
+Add a bounded reader:
+
+```python title="server.py"
+MAX_HEADER_BYTES = 16_384
+
+
+def read_request(connection: socket.socket) -> bytes:
+    data = bytearray()
+
+    while b"\r\n\r\n" not in data:
+        chunk = connection.recv(4096)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > MAX_HEADER_BYTES:
+            raise ValueError("request headers are too large")
+
+    return bytes(data)
+```
+
+The size limit matters even in a small server. Without it, a peer could send an endless header and
+make the process retain more and more memory.
+
+## Parse the request line
+
+Create a small parser:
+
+```python title="server.py"
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Request:
+    method: str
+    target: str
+    version: str
+    headers: dict[str, str]
+
+
+def parse_request(data: bytes) -> Request:
+    head, separator, _body = data.partition(b"\r\n\r\n")
+    if not separator:
+        raise ValueError("incomplete request headers")
+
+    lines = head.decode("iso-8859-1").split("\r\n")
+    method, target, version = lines[0].split(" ", 2)
+    headers: dict[str, str] = {}
+
+    for line in lines[1:]:
+        name, value = line.split(":", 1)
+        headers[name.strip().lower()] = value.strip()
+
+    return Request(method, target, version, headers)
+```
+
+Header names are case-insensitive, so storing lowercase keys makes lookup predictable. Splitting a
+header on only the first colon preserves values that contain additional colons.
+
+<Why>
+The ISO-8859-1 decoding here maps every byte to a character without losing information. It is a useful
+minimal strategy for the header section; request bodies need content-type-specific handling.
+</Why>
+
+Use the functions in the connection block:
+
+```python
+with connection:
+    raw_request = read_request(connection)
+    request = parse_request(raw_request)
+    print(request)
+```
+
+<Warning>
+This is a deliberately incomplete parser. Real HTTP parsing must handle malformed lines, repeated
+headers, transfer encodings, bodies, timeouts and request-smuggling edge cases.
+</Warning>
+
+<TryIt>
+Request `/search?q=tcp` with curl and print `request.target`. Notice that the query string is part of
+the request target; routing will need to separate it from the path.
+</TryIt>

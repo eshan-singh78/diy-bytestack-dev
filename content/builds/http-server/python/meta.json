@@ -1,0 +1,17 @@
+{
+  "title": "Python",
+  "description": "Build an HTTP server from scratch in Python.",
+  "root": true,
+  "pages": [
+    "01-introduction",
+    "02-how-the-web-reaches-your-server",
+    "03-opening-a-tcp-socket",
+    "04-accepting-a-connection",
+    "05-reading-an-http-request",
+    "06-sending-an-http-response",
+    "07-adding-routes",
+    "08-serving-static-files",
+    "09-handling-errors",
+    "10-where-to-go-next"
+  ]
+}

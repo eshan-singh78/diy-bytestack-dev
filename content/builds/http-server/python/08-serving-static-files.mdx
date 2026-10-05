@@ -1,0 +1,77 @@
+---
+title: Serving Static Files
+description: Read a file safely, choose a MIME type and return its bytes.
+---
+
+Static files connect routing to the filesystem. The main challenge is not reading a file—it is making
+sure an untrusted URL cannot escape the directory we intend to publish.
+
+## Create a public file
+
+Add `public/index.html`:
+
+```html title="public/index.html"
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Tiny server</title></head>
+  <body><h1>It works.</h1></body>
+</html>
+```
+
+## Resolve paths inside a fixed root
+
+Add the static file helper:
+
+```python title="server.py"
+import mimetypes
+from pathlib import Path
+from urllib.parse import unquote
+
+PUBLIC_ROOT = Path(__file__).parent.joinpath("public").resolve()
+
+
+def serve_static(url_path: str) -> bytes:
+    relative = unquote(url_path.removeprefix("/static/"))
+    candidate = PUBLIC_ROOT.joinpath(relative).resolve()
+
+    if PUBLIC_ROOT not in candidate.parents or not candidate.is_file():
+        return make_response("404 Not Found", b"file not found\n")
+
+    content_type, _encoding = mimetypes.guess_type(candidate.name)
+    return make_response(
+        "200 OK",
+        candidate.read_bytes(),
+        content_type or "application/octet-stream",
+    )
+```
+
+Connect it near the top of `route()`:
+
+```python
+if path.startswith("/static/"):
+    return serve_static(path)
+```
+
+Now `http://127.0.0.1:8000/static/index.html` should render in a browser.
+
+<Why>
+Calling `resolve()` normalizes components such as `..`. Checking the resolved parent keeps a request
+like `/static/../../server.py` outside the published root. Never join an untrusted path and read it
+without enforcing a boundary.
+</Why>
+
+## MIME types guide the client
+
+The same bytes can be interpreted as text, an image, CSS, or a download. `Content-Type` communicates
+the intended media type. `mimetypes.guess_type()` uses the filename extension; unknown extensions use
+the safe generic type `application/octet-stream`.
+
+<Warning>
+This helper demonstrates the core idea, not a hardened file server. Production systems also handle
+symbolic links, conditional requests, ranges, caching, permission errors and platform differences.
+</Warning>
+
+<TryIt>
+Add `public/styles.css`, link it from the HTML file using `/static/styles.css`, and confirm in curl that
+the CSS response uses a `text/css` content type.
+</TryIt>

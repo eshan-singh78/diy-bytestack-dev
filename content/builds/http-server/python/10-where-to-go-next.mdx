@@ -1,0 +1,57 @@
+---
+title: Where to Go Next
+description: Review the server you built and choose the next experiment.
+---
+
+You started with an operating-system socket and finished with a small HTTP-speaking program. The code
+is intentionally compact, but its boundaries resemble those in larger servers.
+
+## Trace the complete path
+
+For every request, your server now:
+
+1. accepts a connected socket from the listening socket;
+2. reads bytes until the HTTP header terminator;
+3. parses the request line and headers;
+4. splits the path and query string;
+5. selects a route or static file;
+6. serializes a status line, response headers and body;
+7. sends all response bytes; and
+8. closes the connection.
+
+That is the important mental model. Frameworks add safer parsing, concurrency, middleware, logging,
+configuration and application features around the same exchange.
+
+<WhatHappened>
+HTTP stopped being an abstract “web request.” You saw it as structured bytes carried by a TCP stream,
+with your own code responsible for deciding where transport ends and application behavior begins.
+</WhatHappened>
+
+## Useful next experiments
+
+Choose one change at a time:
+
+- **Support `HEAD`.** Return the same headers as `GET`, but omit the body.
+- **Add response headers.** Let `make_response()` accept an explicit header mapping.
+- **Parse a small body.** Read exactly the number of bytes announced by `Content-Length`.
+- **Handle clients concurrently.** Give each connection to a thread or study `asyncio`.
+- **Keep connections alive.** Process multiple requests while carefully handling message boundaries.
+- **Write tests.** Feed raw byte strings to the parser and assert exact response bytes.
+
+<TryIt>
+Write a test for a UTF-8 response body that asserts `Content-Length` equals the encoded byte count.
+Then write a traversal test proving that `/static/../../server.py` returns `404`.
+</TryIt>
+
+## Compare with production
+
+Read the request-handling path of a production Python server such as Uvicorn or Gunicorn. You do not
+need to understand every branch. Look for the concepts you now recognize: accept loops, protocol
+parsers, connection state, timeouts and response serialization.
+
+<Note>
+Rebuilding a simplified system is not about replacing mature infrastructure. It gives you a precise
+model for debugging and choosing that infrastructure with better questions.
+</Note>
+
+You built the important path yourself. Now break it, instrument it, and make one part better.

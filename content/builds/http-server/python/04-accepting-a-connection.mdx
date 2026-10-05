@@ -1,0 +1,64 @@
+---
+title: Accepting a Connection
+description: Accept one client, inspect its address and exchange the first bytes.
+---
+
+The listening socket represents the endpoint. Each client needs a separate connected socket for its
+own byte stream. `accept()` gives us that socket.
+
+## Accept clients in a loop
+
+Update `main()`:
+
+```python title="server.py"
+def main() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((HOST, PORT))
+        server.listen()
+        print(f"listening on http://{HOST}:{PORT}")
+
+        while True:
+            connection, address = server.accept()
+            print(f"connected: {address[0]}:{address[1]}")
+
+            with connection:
+                request_bytes = connection.recv(4096)
+                print(request_bytes)
+```
+
+Both `socket.socket(...)` and the accepted `connection` are context managers. Leaving their `with`
+blocks closes the underlying descriptors even when an exception occurs.
+
+## Read from the stream
+
+`recv(4096)` asks for **up to** 4096 bytes. TCP is a stream: one call is not guaranteed to contain one
+complete request, and the boundaries of a client's `send` calls are not preserved.
+
+For the small requests in this guide, we will read until we find the blank line that ends the headers.
+We will add that loop in the next chapter.
+
+<Warning>
+An empty result from `recv()` means the peer closed its sending side. It does not mean “no bytes are
+available yet.” Blocking sockets wait when data has not arrived.
+</Warning>
+
+Run the server and request it:
+
+```bash
+curl -v --max-time 2 http://127.0.0.1:8000/hello
+```
+
+The server prints a `bytes` value such as `b'GET /hello HTTP/1.1...'`. Curl still reports an empty
+reply because we close the connection without responding.
+
+<TryIt>
+Send a hand-written request with netcat: `printf 'GET / HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n' | nc 127.0.0.1 8000`.
+Compare the bytes printed by the server with curl's request.
+</TryIt>
+
+## One client at a time
+
+This loop is intentionally sequential. While one connected client is being handled, the program does
+not call `accept()` again. A slow client can therefore delay everyone. We will discuss concurrency
+after the protocol is working.

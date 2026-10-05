@@ -1,0 +1,5 @@
+{
+  "title": "Build Your Own HTTP Server",
+  "description": "Understand HTTP by implementing a small server.",
+  "pages": ["python"]
+}

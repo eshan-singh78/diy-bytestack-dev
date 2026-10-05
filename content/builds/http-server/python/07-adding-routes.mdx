@@ -1,0 +1,73 @@
+---
+title: Adding Routes
+description: Select a response from the HTTP method and normalized request path.
+---
+
+A server becomes useful when different request targets produce different behavior. Routing is the
+small decision layer between parsing a request and serializing a response.
+
+## Separate path from query
+
+Python's URL parser can split the request target:
+
+```python title="server.py"
+from urllib.parse import parse_qs, urlsplit
+
+
+def route(request: Request) -> bytes:
+    url = urlsplit(request.target)
+    path = url.path
+    query = parse_qs(url.query)
+
+    if request.method != "GET":
+        return make_response("405 Method Not Allowed", b"method not allowed\n")
+
+    if path == "/":
+        return make_response("200 OK", b"tiny server is running\n")
+
+    if path == "/hello":
+        name = query.get("name", ["builder"])[0]
+        body = f"Hello, {name}!\n".encode("utf-8")
+        return make_response("200 OK", body)
+
+    return make_response("404 Not Found", b"not found\n")
+```
+
+Then replace the inline response in `main()`:
+
+```python
+request = parse_request(read_request(connection))
+connection.sendall(route(request))
+```
+
+The router checks the method before the path. This makes its contract explicit: our routes currently
+support only `GET`.
+
+## Status codes are part of the interface
+
+The status line tells a client the broad outcome before it interprets the body:
+
+| Code | Meaning in our server |
+| --- | --- |
+| `200` | The route produced a normal response. |
+| `404` | No route matched the path. |
+| `405` | The path may exist, but the method is unsupported. |
+
+<Note>
+A production `405` response should also include an `Allow` header describing supported methods. Our
+response builder can be extended to accept extra headers.
+</Note>
+
+Test each branch:
+
+```bash
+curl -i 'http://127.0.0.1:8000/'
+curl -i 'http://127.0.0.1:8000/hello?name=Ada'
+curl -i 'http://127.0.0.1:8000/missing'
+curl -i -X POST 'http://127.0.0.1:8000/hello'
+```
+
+<TryIt>
+Add a `/health` route that returns `OK` as plain text. Keep the route function responsible for
+decisions and the response function responsible for serialization.
+</TryIt>
