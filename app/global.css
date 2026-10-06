@@ -250,15 +250,20 @@ select {
   font-stretch: condensed;
   font-weight: 900;
   letter-spacing: -0.055em;
-  line-height: 0.88;
-  overflow-wrap: anywhere;
+  line-height: 0.96;
+  overflow-wrap: normal;
+  word-break: normal;
+  text-wrap: balance;
   text-transform: uppercase;
 }
 
 mark {
-  padding: 0 0.04em;
+  display: inline-block;
+  padding: 0.02em 0.04em 0.04em;
   color: inherit;
   background: var(--accent);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 .hero-lede {
