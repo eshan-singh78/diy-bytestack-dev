@@ -5,7 +5,7 @@ import { siteConfig } from './site-config';
 export function guideLayoutOptions(): BaseLayoutProps {
   return {
     nav: {
-      title: <Brand compact />,
+      title: <Brand compact linked={false} />,
       url: '/',
     },
     links: [

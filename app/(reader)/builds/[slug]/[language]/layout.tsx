@@ -33,7 +33,7 @@ export default async function GuideLayout({
         sidebar={{
           defaultOpenLevel: 4,
           banner: (
-            <div className="guide-sidebar-banner">
+            <div className="guide-sidebar-banner" key="guide-sidebar-banner">
               <p>Build your own</p>
               <strong>{build.shortTitle}</strong>
               <LanguageSelector
