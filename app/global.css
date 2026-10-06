@@ -1667,8 +1667,17 @@ mark {
   .open-source-section,
   .overview-grid,
   .language-section {
-    grid-template-columns: 1fr 1.25fr;
-    gap: 50px;
+  grid-template-columns: 1fr 1.25fr;
+  gap: 50px;
+  }
+
+  .page-hero {
+  min-height: 280px;
+  padding-block: 44px 36px;
+  }
+
+  .directory-section {
+  padding-block: 52px;
   }
 
   .philosophy-grid {
@@ -1987,12 +1996,24 @@ mark {
   }
 
   .build-card {
-    min-height: 360px;
-    padding: 26px 22px;
+  min-height: 320px;
+  padding: 22px 18px;
+  }
+
+  .philosophy-grid > div {
+  min-height: 180px;
+  padding: 22px;
   }
 
   .build-card-top {
-    margin-bottom: 45px;
+  align-items: flex-start;
+  margin-bottom: 28px;
+  }
+
+  .build-card-top .status-label {
+  max-width: 9ch;
+  text-align: right;
+  line-height: 1.2;
   }
 
   .featured-copy h2,
@@ -2007,7 +2028,14 @@ mark {
   }
 
   .process-grid li {
-    min-height: 200px;
+  min-height: 180px;
+  padding: 22px;
+  }
+
+  .process-grid h3,
+  .philosophy-grid h3 {
+  margin-top: 32px;
+  line-height: 0.98;
   }
 
   .footer-grid {
