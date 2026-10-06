@@ -1663,6 +1663,14 @@ mark {
     grid-template-columns: repeat(2, 1fr);
   }
 
+  .build-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .build-card {
+    min-height: 0;
+  }
+
   .philosophy-section,
   .open-source-section,
   .overview-grid,
