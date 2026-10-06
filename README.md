@@ -76,18 +76,19 @@ content/builds/              Fumadocs MDX build implementations
       01-introduction.mdx
       ...
       10-where-to-go-next.mdx
-lib/builds.ts                Strongly typed build catalog and implementation availability
+content/builds.json          Editable build catalog content
+lib/builds.ts                Build catalog types, validation and helpers
 lib/site-config.ts           Production URL and external links
 lib/source.ts                Fumadocs source loader
 public/                      Static brand and social assets
 ```
 
-Presentation and content are separate. `lib/builds.ts` controls catalog metadata and availability;
-`content/builds/` contains the actual reader content.
+Presentation and content are separate. `content/builds.json` controls the build catalog's text and
+availability; `content/builds/` contains the actual reader content.
 
 ## Add a build
 
-1. Add a typed entry to `builds` in `lib/builds.ts`. Use a unique slug and order number.
+1. Add an entry to `content/builds.json`. Use a unique slug and order number.
 2. Set `status` to `coming-soon` until at least one language implementation is complete.
 3. Create `content/builds/<build-slug>/meta.json` and a folder for each available language.
 4. Add the build slug to `content/builds/meta.json`.
@@ -102,7 +103,7 @@ but no reader route until its content exists.
 1. Create `content/builds/<build-slug>/<language>/`.
 2. Add a `meta.json` with `"root": true`, a human-readable title, description and ordered `pages` array.
 3. Add chapter MDX files. Use the same semantic chapter slug as other languages when chapters are equivalent.
-4. Add the language identifier to the build's `languages` array in `lib/builds.ts`.
+4. Add the language identifier to the build's `languages` array in `content/builds.json`.
 
 The language selector uses matching chapter slugs to preserve the current step. If a matching slug does
 not exist, it opens the selected implementation's first chapter.
@@ -152,10 +153,10 @@ Their implementation is in `components/mdx-callout.tsx`, and registration is cen
 
 ## Catalog states and featuring
 
-- Use `status: 'coming-soon'` to keep a build visible without linking to nonexistent documentation.
-- Use `status: 'available'` only after its listed implementations exist and build successfully.
-- Set exactly one build's `featured` field to `true` to use it in the homepage feature section.
-- Catalog cards, topics, counts, filters and overviews all read from `lib/builds.ts`.
+- Use `"status": "coming-soon"` to keep a build visible without linking to nonexistent documentation.
+- Use `"status": "available"` only after its listed implementations exist and build successfully.
+- Set exactly one build's `"featured"` field to `true` to use it in the homepage feature section.
+- Catalog cards, topics, counts, filters and overviews all read from `content/builds.json`.
 
 ## Site configuration
 
@@ -172,7 +173,7 @@ header/footer links and each chapter's edit and issue URLs.
 
 ## Search
 
-The build directory searches the in-memory typed catalog across titles, descriptions, categories,
+The build directory searches the in-memory validated catalog across titles, descriptions, categories,
 concepts, difficulty and languages.
 
 The guide reader uses Fumadocs' self-hosted search endpoint at `app/api/search/route.ts`; the search

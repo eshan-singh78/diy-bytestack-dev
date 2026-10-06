@@ -12,12 +12,12 @@ export const metadata: Metadata = createMetadata({
 export default function TopicsPage() {
   return (
     <>
-      <header className="page-hero shell section-rule">
+      <header className="page-hero topics-page-hero shell section-rule">
         <p className="eyebrow"><span>Browse / By subject</span></p>
         <h1>Topics</h1>
         <p>Start with the part of the stack<br />you want to understand.</p>
       </header>
-      <section className="shell topics-grid" aria-label="Build topics">
+      <section className="shell topics-grid topics-index-grid" aria-label="Build topics">
         {categories.map((category, index) => {
           const topicBuilds = builds.filter((build) => build.category === category);
           const available = topicBuilds.filter((build) => build.status === 'available').length;

@@ -22,12 +22,12 @@ export default async function BuildsPage({
   const { topic } = await searchParams;
   return (
     <>
-      <header className="page-hero shell section-rule">
+      <header className="page-hero builds-page-hero shell section-rule">
         <p className="eyebrow"><span>Catalog / {String(builds.length).padStart(2, '0')} builds</span></p>
         <h1>Builds</h1>
         <p>Pick something you use every day.<br />Then rebuild the important parts.</p>
       </header>
-      <section className="shell directory-section">
+      <section className="shell directory-section builds-directory">
         <BuildExplorer items={builds} initialCategory={getInitialCategory(topic)} />
       </section>
     </>

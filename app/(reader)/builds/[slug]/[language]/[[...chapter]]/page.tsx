@@ -105,7 +105,7 @@ export default async function GuidePage({ params }: { params: Promise<GuideParam
       </DocsBody>
 
       <nav className="chapter-navigation" aria-label="Chapter navigation">
-        <div>
+        <div className={previous ? 'chapter-previous' : 'chapter-previous chapter-previous-empty'}>
           {previous ? (
             <Link href={previous.url}><span>← Previous</span><strong>{previous.data.title}</strong></Link>
           ) : <span />}
