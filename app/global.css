@@ -212,13 +212,26 @@ select {
   background: var(--accent);
 }
 
-.hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1.72fr) minmax(300px, 0.88fr);
-  border-top: 0;
-}
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.72fr) minmax(0, 0.88fr);
+    border-top: 0;
+  }
 
-.hero-copy {
+  .hero > *,
+  .editorial-section > *,
+  .section-heading-row > *,
+  .featured-grid > *,
+  .philosophy-section > *,
+  .open-source-section > *,
+  .final-cta-inner > *,
+  .page-hero > *,
+  .overview-grid > *,
+  .language-section > * {
+    min-width: 0;
+  }
+
+  .hero-copy {
   min-height: 620px;
   padding: 56px clamp(36px, 5vw, 72px) 56px 0;
 }
@@ -233,18 +246,24 @@ select {
 .philosophy-heading h2 {
   margin: 32px 0 26px;
   font-family: var(--display);
-  font-size: clamp(4rem, 6.5vw, 6.5rem);
+  font-size: clamp(3.5rem, 6.5vw, 6.5rem);
   font-stretch: condensed;
   font-weight: 900;
-  letter-spacing: -0.065em;
-  line-height: 0.76;
+  letter-spacing: -0.055em;
+  line-height: 0.96;
+  overflow-wrap: normal;
+  word-break: normal;
+  text-wrap: balance;
   text-transform: uppercase;
 }
 
 mark {
-  padding: 0 0.04em;
+  display: inline-block;
+  padding: 0.02em 0.04em 0.04em;
   color: inherit;
   background: var(--accent);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 .hero-lede {
@@ -1428,10 +1447,12 @@ mark {
   color: var(--muted);
 }
 
-.guide-scope .prose {
+  .guide-scope .prose {
+  max-width: 100%;
   color: var(--foreground);
   font-size: 1rem;
   line-height: 1.78;
+  overflow-wrap: anywhere;
 }
 
 .guide-scope .prose h2,
@@ -1630,7 +1651,7 @@ mark {
   }
 
   .hero {
-    grid-template-columns: 1.55fr 0.85fr;
+    grid-template-columns: minmax(0, 1.55fr) minmax(0, 0.85fr);
   }
 
   .hero-copy,
@@ -1642,12 +1663,29 @@ mark {
     grid-template-columns: repeat(2, 1fr);
   }
 
+  .build-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .build-card {
+    min-height: 0;
+  }
+
   .philosophy-section,
   .open-source-section,
   .overview-grid,
   .language-section {
-    grid-template-columns: 1fr 1.25fr;
-    gap: 50px;
+  grid-template-columns: 1fr 1.25fr;
+  gap: 50px;
+  }
+
+  .page-hero {
+    min-height: 0;
+    padding-block: 32px 28px;
+  }
+
+  .directory-section {
+  padding-block: 52px;
   }
 
   .philosophy-grid {
@@ -1659,7 +1697,17 @@ mark {
   }
 
   .philosophy-grid h3 {
-    margin-top: 35px;
+    margin-top: 24px;
+  }
+
+  .page-hero {
+    min-height: 0;
+    align-items: start;
+    padding-block: 32px 28px;
+  }
+
+  .directory-section {
+  padding-block: 36px;
   }
 }
 
@@ -1722,7 +1770,49 @@ mark {
   }
 
   .hero h1 {
-    margin-top: 36px;
+    margin-top: 28px;
+  }
+
+  .page-hero {
+    min-height: 0;
+    gap: 24px;
+    padding-block: 36px 32px;
+  }
+
+  .page-hero h1 {
+    font-size: clamp(3.5rem, 15vw, 6rem);
+  }
+
+  .about-hero {
+    min-height: 0;
+    justify-content: flex-start;
+    gap: 24px;
+    padding-block: 40px 36px;
+  }
+
+  .build-overview-hero {
+    min-height: 0;
+    justify-content: flex-start;
+    padding-block: 40px 44px;
+  }
+
+  .overview-kicker {
+    margin-bottom: 24px;
+  }
+
+  .build-overview-hero h1 {
+    margin: 0 0 24px;
+    font-size: clamp(3.25rem, 14vw, 5.5rem);
+  }
+
+  .overview-grid h2,
+  .language-section h2,
+  .philosophy-heading h2 {
+    margin-top: 0;
+  }
+
+  .guide-scope h1 {
+    margin-top: 12px;
   }
 
   .hero-checklist {
@@ -1789,7 +1879,18 @@ mark {
   }
 
   .build-card {
-    min-height: 370px;
+    min-height: 0;
+  }
+
+  .build-card-top {
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .build-card-top .status-label {
+    max-width: 9rem;
+    text-align: right;
   }
 
   .featured-grid {
@@ -1808,11 +1909,26 @@ mark {
   }
 
   .process-grid {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
+  }
+
+  .process-grid li {
+    min-height: 0;
+    padding: 22px 20px 24px;
+  }
+
+  .process-grid h3,
+  .philosophy-grid h3 {
+    margin-top: 24px;
   }
 
   .philosophy-grid {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: 1fr;
+  }
+
+  .philosophy-grid > div {
+    min-height: 0;
+    padding: 22px 20px 24px;
   }
 
   .repeat-bottom {
@@ -1838,9 +1954,10 @@ mark {
   }
 
   .page-hero {
-    min-height: 300px;
-    gap: 20px;
+    min-height: 0;
+    gap: 16px;
     align-items: start;
+    padding-block: 28px 24px;
   }
 
   .page-hero > p:last-child {
@@ -1899,7 +2016,7 @@ mark {
   }
 
   .hero h1 {
-    line-height: 0.8;
+    line-height: 0.9;
   }
 
   .hero-lede {
@@ -1924,12 +2041,24 @@ mark {
   }
 
   .build-card {
-    min-height: 360px;
-    padding: 26px 22px;
+  min-height: 320px;
+  padding: 22px 18px;
+  }
+
+  .philosophy-grid > div {
+  min-height: 180px;
+  padding: 22px;
   }
 
   .build-card-top {
-    margin-bottom: 45px;
+  align-items: flex-start;
+  margin-bottom: 28px;
+  }
+
+  .build-card-top .status-label {
+  max-width: 9ch;
+  text-align: right;
+  line-height: 1.2;
   }
 
   .featured-copy h2,
@@ -1944,7 +2073,14 @@ mark {
   }
 
   .process-grid li {
-    min-height: 200px;
+  min-height: 180px;
+  padding: 22px;
+  }
+
+  .process-grid h3,
+  .philosophy-grid h3 {
+  margin-top: 32px;
+  line-height: 0.98;
   }
 
   .footer-grid {
