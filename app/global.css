@@ -212,13 +212,26 @@ select {
   background: var(--accent);
 }
 
-.hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1.72fr) minmax(300px, 0.88fr);
-  border-top: 0;
-}
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.72fr) minmax(0, 0.88fr);
+    border-top: 0;
+  }
 
-.hero-copy {
+  .hero > *,
+  .editorial-section > *,
+  .section-heading-row > *,
+  .featured-grid > *,
+  .philosophy-section > *,
+  .open-source-section > *,
+  .final-cta-inner > *,
+  .page-hero > *,
+  .overview-grid > *,
+  .language-section > * {
+    min-width: 0;
+  }
+
+  .hero-copy {
   min-height: 620px;
   padding: 56px clamp(36px, 5vw, 72px) 56px 0;
 }
@@ -233,11 +246,12 @@ select {
 .philosophy-heading h2 {
   margin: 32px 0 26px;
   font-family: var(--display);
-  font-size: clamp(4rem, 6.5vw, 6.5rem);
+  font-size: clamp(3.5rem, 6.5vw, 6.5rem);
   font-stretch: condensed;
   font-weight: 900;
-  letter-spacing: -0.065em;
-  line-height: 0.76;
+  letter-spacing: -0.055em;
+  line-height: 0.88;
+  overflow-wrap: anywhere;
   text-transform: uppercase;
 }
 
@@ -1428,10 +1442,12 @@ mark {
   color: var(--muted);
 }
 
-.guide-scope .prose {
+  .guide-scope .prose {
+  max-width: 100%;
   color: var(--foreground);
   font-size: 1rem;
   line-height: 1.78;
+  overflow-wrap: anywhere;
 }
 
 .guide-scope .prose h2,
@@ -1630,7 +1646,7 @@ mark {
   }
 
   .hero {
-    grid-template-columns: 1.55fr 0.85fr;
+    grid-template-columns: minmax(0, 1.55fr) minmax(0, 0.85fr);
   }
 
   .hero-copy,
@@ -1899,7 +1915,7 @@ mark {
   }
 
   .hero h1 {
-    line-height: 0.8;
+    line-height: 0.9;
   }
 
   .hero-lede {
