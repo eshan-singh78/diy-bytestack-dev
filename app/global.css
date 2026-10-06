@@ -1672,8 +1672,8 @@ mark {
   }
 
   .page-hero {
-  min-height: 280px;
-  padding-block: 44px 36px;
+    min-height: 0;
+    padding-block: 32px 28px;
   }
 
   .directory-section {
@@ -1689,7 +1689,17 @@ mark {
   }
 
   .philosophy-grid h3 {
-    margin-top: 35px;
+    margin-top: 24px;
+  }
+
+  .page-hero {
+    min-height: 0;
+    align-items: start;
+    padding-block: 32px 28px;
+  }
+
+  .directory-section {
+  padding-block: 36px;
   }
 }
 
@@ -1861,7 +1871,18 @@ mark {
   }
 
   .build-card {
-    min-height: 370px;
+    min-height: 0;
+  }
+
+  .build-card-top {
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .build-card-top .status-label {
+    max-width: 9rem;
+    text-align: right;
   }
 
   .featured-grid {
@@ -1880,11 +1901,26 @@ mark {
   }
 
   .process-grid {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
+  }
+
+  .process-grid li {
+    min-height: 0;
+    padding: 22px 20px 24px;
+  }
+
+  .process-grid h3,
+  .philosophy-grid h3 {
+    margin-top: 24px;
   }
 
   .philosophy-grid {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: 1fr;
+  }
+
+  .philosophy-grid > div {
+    min-height: 0;
+    padding: 22px 20px 24px;
   }
 
   .repeat-bottom {
@@ -1910,9 +1946,10 @@ mark {
   }
 
   .page-hero {
-    min-height: 300px;
-    gap: 20px;
+    min-height: 0;
+    gap: 16px;
     align-items: start;
+    padding-block: 28px 24px;
   }
 
   .page-hero > p:last-child {
