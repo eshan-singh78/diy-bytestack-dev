@@ -1,10 +1,12 @@
 import type { ReactNode } from 'react';
 
-type CalloutKind = 'note' | 'why' | 'warning' | 'try' | 'happened';
+type CalloutKind = 'note' | 'why' | 'how' | 'think' | 'warning' | 'try' | 'happened';
 
 const labels: Record<CalloutKind, string> = {
   note: 'Note',
   why: 'Why?',
+  how: 'How',
+  think: 'Think',
   warning: 'Warning',
   try: 'Try it',
   happened: 'What just happened?',
@@ -25,6 +27,14 @@ export function Note({ children }: { children: ReactNode }) {
 
 export function Why({ children }: { children: ReactNode }) {
   return <Callout kind="why">{children}</Callout>;
+}
+
+export function How({ children }: { children: ReactNode }) {
+  return <Callout kind="how">{children}</Callout>;
+}
+
+export function Think({ children }: { children: ReactNode }) {
+  return <Callout kind="think">{children}</Callout>;
 }
 
 export function Warning({ children }: { children: ReactNode }) {

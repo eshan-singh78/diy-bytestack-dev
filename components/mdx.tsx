@@ -1,12 +1,14 @@
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import type { MDXComponents } from 'mdx/types';
-import { Note, TryIt, Warning, WhatHappened, Why } from './mdx-callout';
+import { How, Note, Think, TryIt, Warning, WhatHappened, Why } from './mdx-callout';
 
 export function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
     Note,
     Why,
+    How,
+    Think,
     Warning,
     TryIt,
     WhatHappened,
