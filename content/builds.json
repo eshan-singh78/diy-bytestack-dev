@@ -17,9 +17,7 @@
       "HTTP requests",
       "HTTP responses",
       "Headers",
-      "Status codes",
-      "MIME types",
-      "Routing",
+      "Adding routes",
       "Static files"
     ],
     "whatYoullBuild": "A small HTTP/1.x-style server that accepts TCP connections, parses basic requests, generates responses, routes URLs and serves simple files."
