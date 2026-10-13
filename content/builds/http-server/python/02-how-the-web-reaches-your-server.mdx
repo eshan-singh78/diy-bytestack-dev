@@ -1,79 +1,160 @@
 ---
-title: How the Web Reaches Your Server
+title: How a Browser Reaches Your Server
 description: Trace a request through DNS, TCP and HTTP before writing any networking code.
 ---
 
-When you enter a URL, several systems cooperate before an application sees a request. Keeping their
-jobs separate will make the code in later chapters easier to reason about.
+In the previous stage, you started `python3 -m http.server 8000 --bind 127.0.0.1` and opened `http://127.0.0.1:8000/index.html`. The page displayed `Hi from the server`.
+Your browser started with nothing but a line of text, and your server was a process quietly waiting on a port.
+
+Several steps happened between entering the URL and seeing the page:
+- How did that text turn into a connection?
+- How did that connection turn into a page?
+- How does the browser reach your Python process?
+
+DNS, the transport layer, and HTTP have different jobs. Distinguish them before writing the socket code.
 
 ## Start with a URL
 
-Consider this address:
+When you enter a URL in the browser and press Enter, the browser must determine two things:
+- Which machine should it connect to?
+- Which service on that machine should receive the request?
 
+An address is not one thing. It is four small pieces glued together:
 ```text
-http://example.test:8000/hello?name=Ada
+http://localhost:8000/index.html
+└─┬─┘  └───┬───┘└─┬─┘└────┬────┘
+scheme    host  port    path
 ```
-
-It contains a scheme (`http`), host (`example.test`), port (`8000`), path (`/hello`) and query string
-(`name=Ada`). The scheme tells the client which application protocol to speak.
+- **scheme** (`http`) tells the browser which protocol to speak.
+- **hostname** (`localhost`) says which machine to talk to.
+- **port** (`8000`) says which service on that machine.
+- **path** (`/index.html`) says what we want from that service.
 
 ## DNS finds an address
 
-For a public hostname, the client usually asks DNS for an IP address. DNS answers a naming question;
-it does not send the HTTP request. In local development we use `127.0.0.1`, the IPv4 loopback address,
-so the traffic stays on your machine and DNS is unnecessary.
+To connect to an internet hostname, a client normally resolves it to an IP address, possibly using cached information. A literal IP address needs no hostname lookup.
+
+Let's take `google.com` as an example.
+
+For `google.com`, the client and operating system may use cached answers or query a configured recursive DNS resolver. The resolver obtains an address through DNS and returns it. Cache details depend on the browser and operating system.
+
+<TryIt>
+**Optional: DNS inspection.** If `dig` is installed and you have network access, run `dig google.com` and inspect its returned address records. You can also try `dig +trace google.com` to inspect iterative DNS referrals; network or resolver restrictions may prevent a complete trace. If `dig` is unavailable, skip this activity and continue with the local `curl` request below. DNS tools are not needed to build the server.
+</TryIt>
+
+`localhost` is a special-use loopback name. It typically resolves through local configuration to `127.0.0.1`, `::1`, or both; external DNS is not required for this example. Traffic to `127.0.0.1` stays on this computer.
+
+<Warning>
+Some tools resolve `localhost` to both `::1` (IPv6) and `127.0.0.1` (IPv4), and may try both. Our server listens on `127.0.0.1` only as we used `--bind` flag specifically. If `localhost` ever fails to connect on your machine, use `http://127.0.0.1:8000` directly.
+</Warning>
 
 ## TCP creates a byte stream
 
-The client then opens a TCP connection to an IP-and-port pair. TCP provides an ordered, reliable byte
-stream. It does not know about HTTP methods, headers, JSON, or HTML.
+For this build, the destination is `127.0.0.1:8000`.
+
+The `python3 -m http.server` command creates a TCP listening socket bound to port `8000`. The operating system performs the TCP handshake with the client and then the server accepts the connection. TCP carries a stream of bytes between the processes.
+
+For HTTP/1.1, TCP provides these properties:
+- **Reliable:** TCP retransmits lost data or reports a connection failure; it does not guarantee success if the connection breaks.
+- **Ordered:** bytes arrive in the order they were sent.
+
+TCP itself does not identify HTTP methods, headers, HTML, or request boundaries. It transports an ordered byte stream. HTTP/1.1 supplies the message framing. **HTTP/3 is different:** it uses QUIC over UDP, with reliable streams provided by QUIC rather than TCP ([RFC 9114](https://www.rfc-editor.org/rfc/rfc9114.html)). This project implements HTTP/1.1 over TCP.
+
+<TryIt>
+**Optional: packet capture.** If you have `tcpdump` and permission to capture loopback traffic, run the server in one terminal and capture in another:
+
+```bash title="Linux (optional)"
+sudo tcpdump -i lo -tttt 'tcp port 8000'
+```
+
+```bash title="macOS (optional)"
+sudo tcpdump -i lo0 -tttt 'tcp port 8000'
+```
+
+The capture interface may differ. Press **Ctrl+C** to stop it. On a third terminal, run `curl -i http://127.0.0.1:8000/` and observe the TCP connection. If capture tools or permissions are unavailable, **do not install or grant privileges merely to finish this project**. The same `curl` command still demonstrates the response headers and body without packet capture.
+</TryIt>
 
 <Why>
-HTTP normally communicates over TCP, so we need a TCP socket before we can process HTTP. The socket
-is the operating-system object our process uses to access that stream.
+Why a TCP socket here? We are writing an HTTP/1.1 server and need an ordered, reliable byte stream. The operating system gives our process access to that stream through a socket. HTTP/3 uses a different transport, so this explanation does not describe every HTTP version.
 </Why>
+
+For this project, the request path will be:
+
+```text
+curl or browser -> 127.0.0.1:8000 -> TCP listener -> accept()
+                -> recv() -> parse_request() -> serve()
+                -> build_response() -> sendall() -> client
+```
+
+The names after `accept()` are functions you will write in the following stages. In the final implementation, `handle()` coordinates them.
 
 ## HTTP gives the bytes meaning
 
-After the connection is established, the client sends bytes shaped like this:
+Now that the connection is established. The browser sends a request over that connection. For this HTTP/1.1 example, the request starts with a text-based header section. The requested path appears in its request line. The example below was captured from `curl` and a browser also sends the same shape with more headers:
 
 ```http
-GET /hello?name=Ada HTTP/1.1
-Host: 127.0.0.1:8000
-User-Agent: curl/8.0
+GET /index.html HTTP/1.1
+Host: localhost:8000
+User-Agent: curl/8.22.0
+Accept: */*
+
 ```
 
-On the wire, each line ends with carriage-return and line-feed bytes, written as `\r\n`. A blank line
-ends the header section. The first line is the **request line**; the following lines are headers.
+Read it line by line:
+ 
+- **The request line:** a method (`GET`, meaning "give me this"), a target (`/index.html`) and a protocol version.
+- **Headers:** one `Name: value` pair per line, with extra information such as which host the request is for.
+- **A blank line:** this ends the header block. A full HTTP request may also contain a body, which needs separate framing; this GET/HEAD build does not read request bodies.
 
-Our response will follow the same broad pattern:
+Every line ends with the two characters `\r\n` (carriage return and line feed), so the end of the headers is the four bytes `\r\n\r\n`. Finding those four bytes is how our first parser will know it has a complete header block.
+
+The response will follow the same broad pattern. The server reads the request, finds `index.html` in its folder, and writes back a response with the same shape: a status line, headers, a blank line, then the content.
 
 ```http
-HTTP/1.1 200 OK
-Content-Type: text/plain; charset=utf-8
-Content-Length: 6
-Connection: close
+HTTP/1.0 200 OK
+Server: SimpleHTTP/0.6 Python/3.14.7
+Date: Sun, 11 Oct 2026 08:08:58 GMT
+Content-type: text/html
+Content-Length: 240
+Last-Modified: Sat, 10 Oct 2026 21:22:47 GMT
 
-Hello!
+<!DOCTYPE html>
+<html lang="en">
+  ...
+</html>
 ```
+(Illustrative response. The server version, dates, and content length depend on your environment and saved file.)
 
-<WhatHappened>
-DNS selected a machine, TCP created a reliable stream to one process port, and HTTP defined how both
-sides interpret the bytes. Each layer solves a different problem.
-</WhatHappened>
+- **`200 OK`** is the status: it worked.
+- **`Content-Type: text/html`** tells the browser what the bytes are, so it knows to render them as a page rather than show them as text.
+- **`Content-Length: 240`** is an example byte count, not a value to copy. For this response, it states the size of the response body.
+- After the blank line comes the body. Your file may have a different byte count depending on its exact content and line endings.
+
+The browser reads that `Content-Type`, renders the HTML, and "Hi from the server" appears on screen. This example uses the standard library server's HTTP/1.0 response default. Our server will emit HTTP/1.1 responses to supported requests. To inspect your actual file size, run `python3 -c "from pathlib import Path; print(len(Path('index.html').read_bytes()))"` in the folder containing `index.html` and compare it with the observed `Content-Length`.
+
+<TryIt>
+With the built-in server running, open a second terminal and run `curl -v http://127.0.0.1:8000/index.html`. Identify the request line, response headers, and HTML body.
+Lines starting with `>` are what curl **sent**, and lines starting with `<` are what it **received**.
+</TryIt>
 
 ## Observe a real request
 
-Later, while the server is running, use curl's verbose mode:
+Optional, if you have internet access: inspect the request to `example.com`. A proxy or HTTPS redirect may change the exchange:
 
 ```bash
-curl -v http://127.0.0.1:8000/hello
+curl -v http://example.com
 ```
-
-Lines prefixed with `>` are request data; lines prefixed with `<` are response data. Curl is an ideal
-client for this build because it exposes protocol details a browser normally hides.
+Identify the connection, request headers, status line and response headers.
 
 <TryIt>
-Run `curl -v https://example.com` against a real server. Identify the connection, request headers,
-status line and response headers. HTTPS adds TLS around the HTTP exchange, which our server will not implement.
+Run `curl -v https://google.com` against an HTTPS server.
+What changed? Look for lines mentioning TLS near the top of the output.
+HTTPS adds TLS around the HTTP exchange, which our server will not implement.
 </TryIt>
+
+<WhatHappened>
+For this local HTTP/1.1 build, the loopback address identifies the destination, TCP provides a byte stream, and HTTP defines how request and response bytes are interpreted. The blank line ends the headers, not necessarily the entire message.
+</WhatHappened>
+		
+Now that we know how a client reaches your server, we can finally start building. Next, we open a TCP socket.
+Stop the built-in Python server with **Ctrl+C** before using port 8000 for your own implementation. 

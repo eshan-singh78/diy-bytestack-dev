@@ -1,90 +1,253 @@
 ---
 title: Reading an HTTP Request
-description: Read through the header terminator and parse a minimal request line and header map.
+description: Read an HTTP/1.1 request header block and split it into method, target, version and headers.
 ---
 
-Now we can receive bytes. The next job is to recognize the small part of HTTP our server understands.
+In the previous page, we built a TCP server that can accept connections from clients.
+But accepting a connection is only the beginning. When a browser connects to your server, it sends data describing what it wants. For example, a request to fetch a web page.
+Our TCP server currently sees only a stream of bytes. It doesn't know whether the client is asking for /, /about, or /images/logo.png.
 
-## Read complete headers
+To interpret them, our server must first read the HTTP request header block.
 
-Add a bounded reader:
+We watched real requests arrive at our server, but as a single lump of bytes, and we only read them with one `recv(1024)` call. That leaves us with two problems:
+1. One `recv()` is not guaranteed to return the whole request.
+2. Even a complete header block still needs parsing into a method, target, version and headers.
+
+## Read The Complete Headers
+
+TCP is a stream of bytes, and `recv()` returns whatever has arrived so far, up to the number we ask for. A request can show up in one piece, or in several. HTTP/1.1 marks the end of the header block with a blank line, encoded as the four bytes `\r\n\r\n`. This does **not** mark the end of a request body.
+
+For this GET/HEAD exercise, keep reading until the header terminator `\r\n\r\n` appears. Requests with bodies need additional framing such as `Content-Length` or transfer coding, which this build does not implement.
+Let's put that in a function. 
+
+Add `read_request()` above `main()`, and use it in place of the single `recv()` call:
 
 ```python title="server.py"
-MAX_HEADER_BYTES = 16_384
+import socket
 
+HOST = "127.0.0.1"
+PORT = 8000
 
-def read_request(connection: socket.socket) -> bytes:
-    data = bytearray()
-
+def read_request(conn: socket.socket) -> bytes:
+    data = b""
     while b"\r\n\r\n" not in data:
-        chunk = connection.recv(4096)
-        if not chunk:
+        chunk = conn.recv(1024)
+        if not chunk:  # the client closed the connection
             break
-        data.extend(chunk)
-        if len(data) > MAX_HEADER_BYTES:
-            raise ValueError("request headers are too large")
+        data += chunk
+    return data
 
-    return bytes(data)
+def main() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((HOST, PORT))
+        server.listen()
+        print(f"listening on http://{HOST}:{PORT} (Press Ctrl+c to stop)")
+        
+        try:
+            while True:
+                conn, addr = server.accept()
+                with conn:
+                    print(f"connection from {addr}")
+                    data = read_request(conn)
+                    print(data)
+        except KeyboardInterrupt:
+            print("\nbye")
+
+if __name__ == "__main__":
+    main()
 ```
 
-The size limit matters even in a small server. Without it, a peer could send an endless header and
-make the process retain more and more memory.
+Let's walk through the new `read_request()` function:
+ 
+- We start with an empty `bytes` buffer, `data`.
+- `while b"\r\n\r\n" not in data` keeps looping until the blank line appears *anywhere* in the buffer. Because we check the whole buffer and not just the newest chunk, it even works when these four bytes arrive and split across two `recv()` calls.
+- Each `recv()` appends its chunk to the buffer.
+- When the client closes the connection, `recv()` returns empty bytes, `b""`. We stop, because nothing more will ever arrive.
 
-## Parse the request line
+Run the server and call it with `curl`.
+The output looks the same as before, because `curl` sends its whole request at once. The difference only shows up when a request arrives in pieces, and you will try that at the end of this page.
 
-Create a small parser:
+## Decode and Parse The Request
+
+Now we have the complete **header block**. Consider the anatomy of this HTTP/1.1 request:
+
+```text
+GET /index.html HTTP/1.1       <- request line: method, target, version
+Host: 127.0.0.1:8000           <- header
+User-Agent: curl/8.5.0         <- header
+Accept: */*                    <- header
+                               <- blank line: end of the headers
+```
+
+- The first line is the **request line**: three values separated by single spaces.
+- Every other line up to the blank one is a **header**, written as `Name: value`.
+- We call the middle value of the request line the *target*, not the path, because it can also carry a query string such as `/search?q=python`. 
+
+To split the request into parts we will create a new function `parse_request()`. Add this function below `read_request()`:
 
 ```python title="server.py"
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class Request:
-    method: str
-    target: str
-    version: str
-    headers: dict[str, str]
-
-
-def parse_request(data: bytes) -> Request:
-    head, separator, _body = data.partition(b"\r\n\r\n")
-    if not separator:
-        raise ValueError("incomplete request headers")
-
-    lines = head.decode("iso-8859-1").split("\r\n")
-    method, target, version = lines[0].split(" ", 2)
-    headers: dict[str, str] = {}
-
+def parse_request(raw: bytes) -> tuple[str, str, str, dict[str, str]]:
+    if b"\r\n\r\n" not in raw:
+        raise ValueError("incomplete request")
+ 
+    head = raw.split(b"\r\n\r\n", 1)[0].decode("iso-8859-1")
+    lines = head.split("\r\n")
+ 
+    parts = lines[0].split(" ")
+    if len(parts) != 3:
+        raise ValueError("malformed request line")
+    method, target, version = parts
+ 
+    headers = {}
     for line in lines[1:]:
-        name, value = line.split(":", 1)
+        name, sep, value = line.partition(":")
+        if not sep:
+            raise ValueError("malformed header")
         headers[name.strip().lower()] = value.strip()
-
-    return Request(method, target, version, headers)
+ 
+    return method, target, version, headers
 ```
 
-Header names are case-insensitive, so storing lowercase keys makes lookup predictable. Splitting a
-header on only the first colon preserves values that contain additional colons.
+Let's walk through this function, what exactly is it doing?
+1. **Check the header block is complete.** If the blank line is missing, raise `ValueError`.
+2. **Keep the header block.** `raw.split(b"\r\n\r\n", 1)[0]` takes the bytes before the blank line. This first parser does not process any body bytes.
+3. **Turn bytes into text.** : We decode the bytes with `iso-8859-1` 
+4. **Split into lines**, using `"\r\n"`.
+5. **Read the request line.** : Splitting on spaces must give exactly three parts. If not, the request is malformed.
+6. **Read each header.** : `partition(":")` cuts the line at the *first* colon. A line with no colon is malformed. 
+7. **Tidy the headers.** : Names are case-insensitive, so we lower-case them, and we strip extra spaces from values.
 
 <Why>
-The ISO-8859-1 decoding here maps every byte to a character without losing information. It is a useful
-minimal strategy for the header section; request bodies need content-type-specific handling.
+Why `iso-8859-1` and not UTF-8?
+The initial exercise decodes the header block with ISO-8859-1 to preserve a one-to-one mapping of byte values for inspection. This alone does not validate HTTP syntax or make the parser robust. The final stage adds targeted validation.
 </Why>
 
-Use the functions in the connection block:
+## Run The Server
 
-```python
-with connection:
-    raw_request = read_request(connection)
-    request = parse_request(raw_request)
-    print(request)
+Now use the parse in our main code:
+
+```python title="server.py"
+import socket
+
+HOST = "127.0.0.1"
+PORT = 8000
+
+def read_request(conn: socket.socket) -> bytes:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = conn.recv(1024)
+        if not chunk:  # the client closed the connection
+            break
+        data += chunk
+    return data
+
+def parse_request(raw: bytes) -> tuple[str, str, str, dict[str, str]]:
+    if b"\r\n\r\n" not in raw:
+        raise ValueError("incomplete request")
+ 
+    head = raw.split(b"\r\n\r\n", 1)[0].decode("iso-8859-1")
+    lines = head.split("\r\n")
+ 
+    parts = lines[0].split(" ")
+    if len(parts) != 3:
+        raise ValueError("malformed request line")
+    method, target, version = parts
+ 
+    headers = {}
+    for line in lines[1:]:
+        name, sep, value = line.partition(":")
+        if not sep:
+            raise ValueError("malformed header")
+        headers[name.strip().lower()] = value.strip()
+ 
+    return method, target, version, headers
+
+def main() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((HOST, PORT))
+        server.listen()
+        print(f"listening on http://{HOST}:{PORT} (Press Ctrl+c to stop)")
+        
+        try:
+            while True:
+                conn, addr = server.accept()
+                with conn:
+                    print(f"connection from {addr}")
+                    raw = read_request(conn)
+                    try:
+                        method, target, version, headers = parse_request(raw)
+                    except ValueError as exc:
+                        print(f"bad request: {exc}")
+                        continue
+ 
+                    print(f"{method} {target} {version}")
+                    for name, value in headers.items():
+                        print(f"  {name}: {value}")
+        except KeyboardInterrupt:
+            print("\nbye")
+
+if __name__ == "__main__":
+    main()
 ```
 
-<Warning>
-This is a deliberately incomplete parser. Real HTTP parsing must handle malformed lines, repeated
-headers, transfer encodings, bodies, timeouts and request-smuggling edge cases.
-</Warning>
+We are using `parse_request()` in the `main()` function, so that it can get methods, target, version and headers then it prints all headers and request line.
+Notice the header names are lowercase. That's the work of `lower()` in our parser.
+Now, start the server and make a curl request from a second terminal.
+Expected output:
+```text
+GET / HTTP/1.1
+  host: 127.0.0.1:8000
+  user-agent: curl/8.22.0
+  accept: */*
+```
+
+The request header block has become a method, a target, a version and a dictionary of headers. This early parser is intentionally permissive; the final stage adds HTTP/1.1 version and Host validation.
+Now open `http://127.0.0.1:8000` in your browser. Here is part of what a browser request looks like after parsing (yours will differ):
+```text
+GET / HTTP/1.1
+  host: 127.0.0.1:8000
+  user-agent: Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0
+  accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+  accept-language: en-US,en;q=0.9
+  accept-encoding: gzip, deflate, br, zstd
+  sec-gpc: 1
+  connection: keep-alive
+  upgrade-insecure-requests: 1
+  sec-fetch-dest: document
+  sec-fetch-mode: navigate
+  sec-fetch-site: none
+  sec-fetch-user: ?1
+  priority: u=0, i
+```
+
+Finally, send something that is not HTTP at all. Open second terminal and run:
+ 
+```bash title="Terminal"
+python3 -c "import socket; s = socket.create_connection(('127.0.0.1', 8000)); s.sendall(b'hello\r\n\r\n')"
+```
+The server survives, and prints `bad request: malformed request line`.
+
+<WhatHappened>
+When a client connected, `accept()` returned a socket for that connection, just like before. This time we passed it to `read_request()`, which kept calling `recv()` until the blank line (`\r\n\r\n`) showed up in the buffer. That blank line is how we knew the headers were complete.
+
+Next, `parse_request()` took those raw bytes, decoded them into text, and split them into lines. The first line became the method, target and version. Every other line was cut at its first colon into a header name and value, and we stored them in a dictionary with lowercase names.
+
+Then `main()` printed the request line and each header.
+
+When we sent `hello\r\n\r\n`, the data had a blank line but no valid request line, so `parse_request()` raised a `ValueError`.
+We caught it, printed the problem, and moved on to the next connection instead of crashing.
+</WhatHappened>
 
 <TryIt>
-Request `/search?q=tcp` with curl and print `request.target`. Notice that the query string is part of
-the request target; routing will need to separate it from the path.
+Send a request in two pieces, with a pause in the middle:
+```bash title="Terminal"
+python3 -c "import socket, time; s = socket.create_connection(('127.0.0.1', 8000)); s.sendall(b'GET / HTTP/1.1\r\nHo'); time.sleep(2); s.sendall(b'st: ByteStack\r\n\r\n')"
+```
+ 
+Your new server waits for the second piece and prints the whole request.
+Try sending `Host: ByteStack` as `HOST: ByteStack` in the above command. Does the parsed output change?
 </TryIt>
+
+Our server now understands what the client wants, but it still says nothing back, so every client ends up with an empty reply. Next, we write the other half of the conversation: sending an HTTP response.

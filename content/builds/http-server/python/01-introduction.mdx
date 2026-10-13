@@ -20,61 +20,114 @@ because every team needs a server, but because sockets and protocols become conc
 watch their bytes move.
 </Why>
 
+## What you will demonstrate
+
+By the end, you should be able to:
+
+- Open a local listening socket and identify where request bytes enter the program.
+- Parse an HTTP/1.1 request header block and explain why a single `recv()` may be insufficient.
+- Send GET and HEAD responses with the correct body behavior and byte length.
+- Serve files from a confined `public/` directory and verify success and error cases.
+- Diagnose one failure and make one independently tested change.
+
+## Prerequisites and setup
+
+You need Python 3.11 or later, a text editor, a terminal, basic Python functions/conditionals/bytes, and the ability to open **two terminal windows**. The instructions use `python3`; on Windows, the Python launcher may be `py -3` instead. Use whichever command selects your installed Python 3.11+ interpreter consistently.
+
+| Tool | Requirement | Quick check | If unavailable |
+| --- | --- | --- | --- |
+| Python 3.11+ | Required | `python3 --version` | Install a current Python 3 release; Windows may use `py -3 --version` |
+| `curl` | Required for the walkthrough | `curl --version` | Install the command-line curl tool; check that you are not using a shell alias |
+| Text editor | Required | Open and save `index.html` | Any editor that saves plain UTF-8 text |
+| `dig` | Optional | `dig -v` | Skip the external DNS experiment |
+| `tcpdump` and capture permissions | Optional | `tcpdump --version` | Use the curl-only observation instead |
+
+Use a local machine and the loopback address `127.0.0.1`. If port 8000 is in use, stop the process occupying it or choose an unused port **consistently in the server and every test URL**. The baseline `index.html` at the project root is separate from the `public/index.html` you will create later.
+
+**Time:** Allow multiple focused sessions. The total is deliberately not presented as a measured hour estimate; a pilot learner run is needed to calibrate it. Stop after each stage to inspect the result rather than rushing through code blocks.
+
 ## The boundary of our server
 
 We will build a learning-sized HTTP/1.x-style server. It will handle one request per connection and
 always respond with `Connection: close`. That keeps connection management visible and lets us focus
 on the protocol shape.
 
-It will **not** implement TLS, HTTP/2, request streaming, production-grade limits, or hardened parsing.
-Those features matter; they are deliberately outside this build.
+This is unencrypted HTTP on a loopback TCP socket. The final build supports HTTP/1.1 GET and HEAD, serves static files, and replies to selected errors. It does **not** implement TLS, HTTP/2, HTTP/3, request-body framing, production-grade limits or hardened parsing. Those are deliberate boundaries, not guarantees of safety.
 
 <Warning>
 Do not expose this server to the public internet or use it for untrusted traffic. Production servers
 have years of security and interoperability work behind them.
 </Warning>
 
-## Create the project
+## Simple HTTP server
 
-Make a directory and a Python file:
+Create a working directory in a terminal:
+```bash title="Terminal"
+mkdir bytestack && cd bytestack
+```
+Create a new file named `index.html` inside the directory using your text editor.
+Open `index.html` in your editor and add the following HTML:
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Server Message</title>
+</head>
+<body>
+    <h1>Hi from the server</h1>
+</body>
+</html>
+```
+Save the file. Your basic HTML page is now ready to be served.
+
+Check the interpreter that you will use to run the server:
 
 ```bash title="Terminal"
-mkdir tiny-http-server
-cd tiny-http-server
-touch server.py
-```
-
-You need Python 3.11 or newer. Check your interpreter with:
-
-```bash
 python3 --version
 ```
 
-We will run the server on port `8000`, so its local address will be
-[`http://127.0.0.1:8000`](http://127.0.0.1:8000).
+Python includes an HTTP server module in its standard library. For a baseline comparison, start it with:
 
-## A first placeholder
-
-Add a normal entry point to `server.py`:
-
-```python title="server.py"
-HOST = "127.0.0.1"
-PORT = 8000
-
-
-def main() -> None:
-    print(f"server will listen on http://{HOST}:{PORT}")
-
-
-if __name__ == "__main__":
-    main()
+```bash title="Terminal"
+python3 -m http.server 8000 --bind 127.0.0.1
 ```
-
-Run it with `python3 server.py`. Nothing is listening yet, but the project has a stable place to grow.
+This starts Python's built-in server, not the one you will write.
+This will run the server on port `8000`, so the local address will be
+[`http://127.0.0.1:8000`](http://127.0.0.1:8000). 
 
 <TryIt>
-Change `PORT` to `8080` and run the program again. The port is part of an address; changing it means
-clients must connect to a different endpoint.
+Open a second terminal and run:
+```bash title="Terminal"
+curl -i http://127.0.0.1:8000/index.html
+``` 
+This includes response headers and body. Observe the server terminal log the request.
 </TryIt>
 
-Next, we will trace the route from a browser address to the bytes our Python process receives.
+Open `http://127.0.0.1:8000/index.html` in a browser. The server remains active until stopped with **Ctrl+C**. If the command reports an address-in-use error, stop the earlier server before retrying.
+
+<TryIt>
+After stopping the first server, change `8000` to `8080` and run the command again. The port is part of an address; changing it means
+the server starts listening on a different endpoint.
+</TryIt>
+
+### Is that it?
+No! You just started an HTTP server, but to build your own HTTP server you need to understand:
+- How does it work?
+- How did it start? 
+- How is it listening to the request?
+- How is it going to respond?
+
+The module is implemented in Python. You can inspect the [CPython `http.server` source](https://github.com/python/cpython/blob/d59feb5dbe5395615d06c30a95e6a6a9b7681d4d/Lib/http/server.py#L1280), but you do not need to study it to complete this project. 
+
+<How>
+The built-in server delegates to a few distinct pieces:
+- Handler: The code uses `SimpleHTTPRequestHandler` which reads each request and decides what to send back.
+- TCP socket: The server listens on a TCP socket through `socketserver.TCPServer` which accepts a client connection and gives that connection to a handler.
+- `serve_forever()`: The server object runs an accept/handle loop until stopped.
+
+Our implementation will expose the socket calls and protocol bytes instead of hiding them inside the module.
+</How>
+
+Next, trace how a browser finds a server and establishes a connection. Then replace the standard-library baseline with code you wrote.

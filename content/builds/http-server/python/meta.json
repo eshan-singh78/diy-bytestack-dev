@@ -1,7 +1,5 @@
 {
-  "title": "Python",
-  "description": "Build an HTTP server from scratch in Python.",
-  "root": true,
+  "title": "Build Your Own HTTP Server",
   "pages": [
     "01-introduction",
     "02-how-the-web-reaches-your-server",

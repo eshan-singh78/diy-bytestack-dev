@@ -1,71 +1,262 @@
 ---
 title: Sending an HTTP Response
-description: Serialize a status line, headers and body into a valid response.
+description: Build a response by hand, send it over the socket and see your first page load in a browser.
 ---
 
-HTTP responses are bytes too. We will create the body first, calculate its exact byte length, then
-prepend the status line and headers.
+In the previous page, we taught our server to read an HTTP request and split it into a method, a target, a version and a dictionary of headers.
+But there is still a problem: our server never replies.
+
+In this page, we write the other half of the conversation. By the end, `curl` and your browser will receive a real response from your own code.
+
+HTTP responses are bytes too. We will create the body first, calculate its exact byte length, then prepend the status line and headers.
 
 ## Build the response
 
-Add this function:
+A response is built like a request: a first line, some headers, a blank line, and then an optional body.
 
-```python title="server.py"
-def make_response(
-    status: str,
-    body: bytes,
-    content_type: str = "text/plain; charset=utf-8",
-) -> bytes:
-    headers = [
-        f"HTTP/1.1 {status}",
-        f"Content-Type: {content_type}",
-        f"Content-Length: {len(body)}",
-        "Connection: close",
-        "",
-        "",
-    ]
-    head = "\r\n".join(headers).encode("ascii")
-    return head + body
+```text
+HTTP/1.1 200 OK                       <- status line: version, status code, reason
+Content-Type: text/html               <- header
+Content-Length: 27                    <- header
+Connection: close                     <- header
+                                      <- blank line: end of the headers
+<h1>Hi from the server</h1>           <- body
 ```
 
-The two empty strings produce the double line ending between headers and body. Header syntax is ASCII
-here, while the body can contain arbitrary bytes.
+- The first line is the **status line**: the HTTP version, a three-digit **status code**, and a short **reason** in plain words. `200 OK` means "everything went fine".
+- The headers use the same `Name: value` shape we parsed on the last page.
+- Lines end with `\r\n`, and a blank line ends the headers, exactly like in a request.
+- Everything after the blank line is the **body**: the actual page, image or file.
+
+<Note>
+From this page on, we show only the lines that change at each step, and the whole file at the end of the page. If you're following along step by step, you don't need to do anything extra
+</Note>
+
+### Hard-coded response
+
+Let's start with the smallest response we can write. We will send fixed bytes and see them arrive.
+In `main()`, add this code at the end of the `with conn:` block, right after the loop that prints the headers:
+
+```python title="server.py"
+                    print(f"{method} {target} {version}")
+                    for name, value in headers.items():
+                        print(f"  {name}: {value}")
+ 
+                    conn.sendall(
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: text/plain\r\n"
+                        b"Content-Length: 13\r\n"
+                        b"Connection: close\r\n"
+                        b"\r\n"
+                        b"Hello, world!"
+                    )
+```
+
+Python joins the neighbouring byte strings into one. Each header line ends with `\r\n`, and the lone `\r\n` creates the blank line before the body.
+ 
+Start the server and from a second terminal, run `curl -i http://127.0.0.1:8000`. The `-i` option makes curl print the response headers as well as the body.
+ 
+Expected output:
+ 
+```text
+HTTP/1.1 200 OK
+Content-Type: text/plain
+Content-Length: 13
+Connection: close
+ 
+Hello, world!
+```
+
+That is a real HTTP response, written by hand and sent from your own program.
 
 <Why>
-`Content-Length` counts bytes, not Python characters. Encoding `"café"` as UTF-8 produces five bytes,
-even though the string contains four characters.
+Why do we send `Content-Length`?
+The client needs to know where the body ends. `Content-Length` tells it exactly how many bytes to expect.
+`Hello, world!` is 13 bytes, so we say 13. 
+Without it, a client could only guess the end by waiting for the connection to close. It could not tell a complete response from one cut off halfway.
 </Why>
 
-## Send every byte
+<Why>
+Why `sendall()` and not `send()`?
+Just as `recv()` may return only part of what the client sent, `send()` may send only part of what we give it.
+It returns how many bytes it managed to send, and leaving the rest would give the client a broken response. `sendall()` keeps sending until every byte has gone.
+</Why>
 
-Update the connection block:
+<TryIt>
+Change `Content-Length: 13` to `Content-Length: 5` and run the same `curl` command. The client trusts the header, so it reads only the first 5 bytes of the body.
+Then try `Content-Length: 20`. The client waits for 20 bytes, but our server closes the connection after 13.
+`curl` reports an error saying the transfer closed with bytes remaining to read.
+</TryIt>
+
+### Extract a response builder
+
+Now that we know about the response body, we will build a function `build_response()`.
+Counting bytes by hand is not going to work for long. Every response we send from now on needs a status line, headers and a correct `Content-Length`. So let's put that in one place.
+
+Add `build_response()` below `parse_request()`:
+ 
+```python title="server.py"
+def build_response(
+    status: int,
+    reason: str,
+    body: bytes,
+    content_type: str = "text/html; charset=utf-8",
+) -> bytes:
+    head = (
+        f"HTTP/1.1 {status} {reason}\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    )
+    return head.encode("iso-8859-1") + body
+```
+
+Let's walk through it:
+ 
+1. **Status line.** : We build it from the status code and the reason we are given.
+2. **Headers.** : `Content-Type` says what kind of data the body is, so the browser knows to show it as a web page.
+`Content-Length` is computed with `len(body)`, so we never count by hand again.
+3. **`Connection: close`.** : We tell the client we will close the connection after this response.
+4. **The blank line.** : The final `"\r\n"` ends the headers.
+5. **Join head and body.** : We encode the head to bytes with the same `iso-8859-1` encoding we used to decode requests, and attach the body, which is already bytes.
+
+Notice that `body` is `bytes`, not a string. `Content-Length` counts **bytes**, and a string's length counts characters.
+
+## Run The server
+
+Now replace the hard-coded `conn.sendall(...)` in `main()` with a call to `build_response()`.
 
 ```python title="server.py"
-with connection:
-    raw_request = read_request(connection)
-    request = parse_request(raw_request)
-    body = f"Hello from {request.target}!\n".encode("utf-8")
-    response = make_response("200 OK", body)
-    connection.sendall(response)
+import socket
+
+HOST = "127.0.0.1"
+PORT = 8000
+
+def read_request(conn: socket.socket) -> bytes:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = conn.recv(1024)
+        if not chunk:  # the client closed the connection
+            break
+        data += chunk
+    return data
+
+def parse_request(raw: bytes) -> tuple[str, str, str, dict[str, str]]:
+    if b"\r\n\r\n" not in raw:
+        raise ValueError("incomplete request")
+ 
+    head = raw.split(b"\r\n\r\n", 1)[0].decode("iso-8859-1")
+    lines = head.split("\r\n")
+ 
+    parts = lines[0].split(" ")
+    if len(parts) != 3:
+        raise ValueError("malformed request line")
+    method, target, version = parts
+ 
+    headers = {}
+    for line in lines[1:]:
+        name, sep, value = line.partition(":")
+        if not sep:
+            raise ValueError("malformed header")
+        headers[name.strip().lower()] = value.strip()
+ 
+    return method, target, version, headers
+
+def build_response(
+    status: int,
+    reason: str,
+    body: bytes,
+    content_type: str = "text/html; charset=utf-8",
+) -> bytes:
+    head = (
+        f"HTTP/1.1 {status} {reason}\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    )
+    return head.encode("iso-8859-1") + body
+
+def main() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((HOST, PORT))
+        server.listen()
+        print(f"listening on http://{HOST}:{PORT} (Press Ctrl+c to stop)")
+        
+        try:
+            while True:
+                conn, addr = server.accept()
+                with conn:
+                    print(f"connection from {addr}")
+                    raw = read_request(conn)
+                    try:
+                        method, target, version, headers = parse_request(raw)
+                    except ValueError as exc:
+                        print(f"bad request: {exc}")
+                        continue
+ 
+                    print(f"{method} {target} {version}")
+                    for name, value in headers.items():
+                        print(f"  {name}: {value}")
+
+                    status, reason = 200, "OK"  # always succeeds for now, routes will decide this. 
+                    html = "<h1>Hi from the server</h1>"
+                    response = build_response(status, reason, html.encode("utf-8"))
+                    conn.sendall(response)
+        except KeyboardInterrupt:
+            print("\nbye")
+
+if __name__ == "__main__":
+    main()
 ```
 
-`send()` may write only part of a buffer. `sendall()` keeps sending until all bytes are handed to the
-operating system or an error occurs.
+We added `build_response()` and three lines at the end of the `with conn:` block.
+We write the page as a string, encode it to bytes with UTF-8 (matching the `charset=utf-8` in the header), build the response and send it.
+When the block ends, `with conn:` closes the connection.
 
-Run the server and then:
+Now start the server and run `curl -i http://127.0.0.1:8000` again.
+Expected output:
+```text
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+Content-Length: 27
+Connection: close
 
-```bash
-curl -i http://127.0.0.1:8000/hello
+<h1>Hi from the server</h1>
 ```
 
-The `-i` flag includes response headers, so you can verify the status and length.
+Now open `http://127.0.0.1:8000` in your browser. For the first time, the page loads and shows a heading: **Hi from the server**.
+
+Look at the server's terminal. You will probably see a second request you did not make:
+```text
+GET /favicon.ico HTTP/1.1
+``` 
+Browsers automatically ask for a small icon to show in the tab. Our server has no idea what a favicon is, so it answers with the same page.
+
+<Note>
+Look closely: our server answered `200 OK` for `/favicon.ico`, a file it doesn't have. Try `curl -i http://127.0.0.1:8000/does-not-exist` and you still get `200 OK`.
+
+That's a lie, and we have hard-coded it on purpose for now, because the server doesn't yet look at the target.
+In the next page, it will choose the status: `200` for known routes and `404` for everything else.
+</Note>
 
 <WhatHappened>
-Our process accepted a TCP stream, interpreted its first bytes as an HTTP request, produced HTTP
-response bytes and closed the stream. We now have the smallest complete server loop.
+When the client connected, `read_request()` collected the request and `parse_request()` split it into parts, just like on the last page.
+Then `build_response()` assembled the status line, the headers and a blank line, and attached the body. `Content-Length` came from `len(body)`, so it was always correct. `conn.sendall()` pushed every byte to the client.
+ 
+The client read the status line, then the headers, and used `Content-Length` to know how many body bytes to expect. Because the content type was `text/html`, the browser rendered the body as a web page. When our `with conn:` block ended, the connection was closed and the server went back to `accept()`.
 </WhatHappened>
 
 <TryIt>
-Change the body to `"Hello, दुनिया!\n"`, keep UTF-8 encoding, and confirm that curl still receives the
-whole response. Compare `len(text)` with `len(text.encode("utf-8"))` in a Python shell.
+Change the text in `html` to include an accented character, such as `Café`. Run `curl -i http://127.0.0.1:8000` and look at `Content-Length`.
+Then compare the number of characters with the number of bytes:
+```bash title="Terminal"
+python3 -c "t = 'Café'; print(len(t), len(t.encode('utf-8')))"
+```
+You'll see `4 5`. Which of the two numbers did our server use in the header?
 </TryIt>
+
+Our server now speaks both halves of HTTP, but it gives the same answer to everyone. Ask for `/about` or `/favicon.ico` and you get the same heading.
+Next, we teach the server to look at the target and decide what to send: adding routes.

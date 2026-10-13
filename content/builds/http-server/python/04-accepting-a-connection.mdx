@@ -1,64 +1,239 @@
 ---
 title: Accepting a Connection
-description: Accept one client, inspect its address and exchange the first bytes.
+description: Accept clients, read the raw bytes they send and keep your TCP server running.
 ---
 
-The listening socket represents the endpoint. Each client needs a separate connected socket for its
-own byte stream. `accept()` gives us that socket.
+Previously, our socket started listening, and the operating system began queueing connections for it. But our program never picked any of them up, so `curl` just timed out.
 
-## Accept clients in a loop
+In this section, we will accept a connection, read the bytes the client sent and print them, so you can see a real HTTP request arrive at your own program. Along the way, we will also run into a classic problem with restarting servers, and fix it.
 
-Update `main()`:
+## Accept one connection
+
+We start from the file we ended with on the last page, and replace the `input(...)` placeholder with code that waits for a client. To accept an incoming connection, we use the `accept()` method on our listening socket.
+
+Let's start by updating `server.py`:
 
 ```python title="server.py"
+import socket
+
+HOST = "127.0.0.1"
+PORT = 8000
+
+def main() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind((HOST, PORT))
+        server.listen()
+        print(f"listening on http://{HOST}:{PORT}")
+
+        conn, addr = server.accept()
+        with conn:
+            print(f"connection from {addr}")
+            data = conn.recv(1024)
+            print(data)
+
+if __name__ == "__main__":
+    main()
+```
+
+We have introduced four new things here and removed the `input()` line:
+- **`server.accept()`** waits for an incoming connection and returns two values: a new socket for communicating with that client (`conn`) and the client's address (`addr`).
+If nobody connects, the program simply sits here. This is called *blocking*.
+- **`addr`** is a pair containing the client's IP address and port. The client's port is a temporary one that their own operating system picks for each connection, so it changes every time.
+- **`conn.recv(1024)`** reads up to 1024 bytes that the client sent, and returns them as a `bytes` object.
+- **`with conn:`** closes the client socket when execution leaves the block, just as the with statement closes our listening socket when its block ends.
+
+Notice that we still have two separate sockets. `server` is our listening socket, which waits for new connections. `conn` is a new socket representing one particular connection.
+
+<Why>
+Why does `accept()` return a new socket instead of reusing the listening one?
+
+Think of the listening socket as a door. Its job is to accept new arrivals. Once a client comes in, the server gets a separate socket to communicate with that client, while the listening socket stays ready for the next connection.
+
+This separation lets the server accept new connections without losing track of existing ones.
+</Why>
+
+Run the server `python3 server.py` and then in a second terminal use `curl -v http://127.0.0.1:8000`
+
+Expected output in first terminal:
+```bash title="Terminal"
+listening on http://127.0.0.1:8000
+connection from ('127.0.0.1', 33952)
+b'GET / HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nUser-Agent: curl/8.22.0\r\nAccept: */*\r\n\r\n'
+```
+
+That last line is a real HTTP request, received by your own code. It is the same text you saw on `How a Browser Reaches Your Server`, but now you can see how it really travels:
+- The `b'...'` means these are **bytes**, not a Python string. A socket only deals in bytes.
+- Each line ends with `\r\n`, which Python shows as visible characters.
+- The request ends with `\r\n\r\n`: a line ending, then an empty line. That is the blank line that marks the end of the headers.
+
+Each time you use curl in the second terminal, you will see different client port for every new connection.
+
+Curl may report an empty reply or a connection error. Don't worry about that just yet. We haven't implemented HTTP or sent any data back to the client. The server program also exits after this one connection.
+
+Our goal here was simply to accept a TCP connection, and we have done that!
+
+<WhatHappened>
+When we ran curl, the operating system established the TCP connection and made it available to our listening socket. Our program was blocked inside `accept()`, waiting for that connection.
+
+Once the connection was accepted, `accept()` returned a new socket and the client's address. We printed the address and closed the client socket.
+
+After that, our program reached the end of `main()`. The `with` block automatically closed the listening socket as well, and the process exited.
+</WhatHappened>
+
+That last part reveals another problem, our server accepts only one connection and then stops. We need our server to keep running and accept more connections.
+
+But before the last part there is another problem.
+
+## Restarting the server
+
+Now run `python3 server.py` again, right away after the connection closes. You may see this:
+
+```text
+OSError: [Errno 98] Address already in use
+```
+
+Yes, if you wait a minute, you will be able to restart the server again but not immediately.
+
+<Why>
+Nothing is running on port `8000`, so what is using it?
+Look at who closed the connection first: our server did, when the `with conn:` block ended.
+After closing, the operating system keeps that address reserved for a short while, in a state called `TIME_WAIT`, to catch stray late packets.
+During that time, a plain `bind` is refused.
+</Why>
+
+To fix it, we are adding one more line before we `bind` a port:
+
+```python title="server.py"
+import socket
+
+HOST = "127.0.0.1"
+PORT = 8000
+
 def main() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((HOST, PORT))
         server.listen()
         print(f"listening on http://{HOST}:{PORT}")
+        
+        conn, addr = server.accept()
+        with conn:
+            print(f"connection from {addr}")
+            data = conn.recv(1024)
+            print(data)
 
-        while True:
-            connection, address = server.accept()
-            print(f"connected: {address[0]}:{address[1]}")
-
-            with connection:
-                request_bytes = connection.recv(4096)
-                print(request_bytes)
+if __name__ == "__main__":
+    main()
 ```
 
-Both `socket.socket(...)` and the accepted `connection` are context managers. Leaving their `with`
-blocks closes the underlying descriptors even when an exception occurs.
-
-## Read from the stream
-
-`recv(4096)` asks for **up to** 4096 bytes. TCP is a stream: one call is not guaranteed to contain one
-complete request, and the boundaries of a client's `send` calls are not preserved.
-
-For the small requests in this guide, we will read until we find the blank line that ends the headers.
-We will add that loop in the next chapter.
+What does `SO_REUSEADDR` do?
+`SO_REUSEADDR` tells the operating system that we are happy to bind to an address that is only being held in `TIME_WAIT`.
 
 <Warning>
-An empty result from `recv()` means the peer closed its sending side. It does not mean “no bytes are
-available yet.” Blocking sockets wait when data has not arrived.
+If you run it again right now and still see the error right after adding the `option`, that is expected. The leftover entry was created by the old version, which did not have the `option`, so it must expire first.
+On Linux that takes about a minute. Wait a bit, or change `PORT` to `8001` for now.
+Once the new version is in place, restarts are instant.
 </Warning>
 
-Run the server and request it:
+## Accept Many Connections
 
-```bash
-curl -v --max-time 2 http://127.0.0.1:8000/hello
+Back to the last problem that our current program accepts only one connection and then exits. A real server needs to keep running and accept more clients. We can do that with an infinite loop.
+
+So we are wrapping the `accept()` code inside an infinite loop, and catch `Ctrl+C` so that stopping the server is clean.
+
+
+Let's modify our code:
+
+```python title="server.py"
+import socket
+
+HOST = "127.0.0.1"
+PORT = 8000
+
+def main() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((HOST, PORT))
+        server.listen()
+        print(f"listening on http://{HOST}:{PORT} (Press Ctrl+c to stop)")
+        
+        try:
+            while True:
+                conn, addr = server.accept()
+                with conn:
+                    print(f"connection from {addr}")
+                    data = conn.recv(1024)
+                    print(data)
+        except KeyboardInterrupt:
+            print("\nbye")
+
+if __name__ == "__main__":
+    main()
 ```
 
-The server prints a `bytes` value such as `b'GET /hello HTTP/1.1...'`. Curl still reports an empty
-reply because we close the connection without responding.
+Run it again and send several requests using curl from another terminal.
+
+Each connection will be accepted, logged, and closed. The loop then returns to `accept()` and waits for the next connection.
+
+This server handles connections sequentially, it accepts one connection at a time and closes it before accepting the next. It is not yet a concurrent server.
+
+Expected output in first terminal:
+```bash title="Terminal"
+listening on http://127.0.0.1:8000 (Press Ctrl+c to stop)
+connection from ('127.0.0.1', 54274)
+b'GET / HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nUser-Agent: curl/8.22.0\r\nAccept: */*\r\n\r\n'
+connection from ('127.0.0.1', 54290)
+b'GET / HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nUser-Agent: curl/8.22.0\r\nAccept: */*\r\n\r\n'
+connection from ('127.0.0.1', 54294)
+b'GET / HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nUser-Agent: curl/8.22.0\r\nAccept: */*\r\n\r\n'
+^C
+bye
+```
+
+<WhatHappened>
+The `while True:` loop goes back to `accept()` as soon as one connection is finished, so the server never exits on its own.
+Pressing `Ctrl+C` raises a `KeyboardInterrupt`, which we catch to say bye instead of printing a traceback error.
+</WhatHappened>
+
+## A Visit From Your Browser
+
+With the server running, open `http://127.0.0.1:8000` in your browser. The page never loads, and the browser eventually reports an error such as an empty response, because we read the request and never answered. But look at the server's terminal. A browser sends the same kind of request, with many more headers. 
+
+Expected output:
+```bash title="Terminal"
+b'GET / HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nUser-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.9\r\nAccept-Encoding: gzip, deflate, br, zstd\r\nSec-GPC: 1\r\nConnection: keep-alive\r\nUpgrade-Insecure-Requests: 1\r\nSec-Fetch-Dest: document\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-Site: none\r\nSec-Fetch-User: ?1\r\nPriority: u=0, i\r\n\r\n'
+```
+
+Yours will differ. The shape is the same as curl's. A request line, headers, and the blank line at the end.
 
 <TryIt>
-Send a hand-written request with netcat: `printf 'GET / HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n' | nc 127.0.0.1 8000`.
-Compare the bytes printed by the server with curl's request.
+Open the server in your browser, and then call it with `curl` in second terminal.
+Compare the two requests, which headers does the browser send that curl does not?
+Then count how many connections each one makes.
+Does your browser make more than one?
 </TryIt>
 
-## One client at a time
+<Warning>
+`recv(1024)` reads *up to* 1024 bytes. A request can be bigger, or arrive in several pieces, and then we would see only part of it. We fix this on the next page.
+</Warning>
 
-This loop is intentionally sequential. While one connected client is being handled, the program does
-not call `accept()` again. A slow client can therefore delay everyone. We will discuss concurrency
-after the protocol is working.
+<TryIt>
+Change the byte in `recv()` from 1024 to 10 and run the server again.
+Send a request using `curl http://127.0.0.1:8000/` from another terminal.
+How much of the request does your server print now?
+You'll see only the first 10 bytes, something like b'GET / HTTP', rather than the full request.
+Because this server closes without sending any HTTP response, curl reports an empty response, a reset, or a similar connection error depending on the operating system. Do not require one exact error string.
+</TryIt>
+
+<Think>
+Does passing `1024` to `recv()` guarantee that you receive a complete HTTP header block? Write down your prediction, then compare it with the 10-byte experiment. What does the observed byte count actually guarantee?
+</Think>
+
+
+So far we have built a TCP server which can create a TCP socket, bind to a port, listen and accept connections.
+
+We have the basic structure of a TCP server, but it still isn't an HTTP server. We can now see requests arrive, but only as a lump of bytes. It doesn't understand request methods such as GET, paths such as /, or HTTP headers.
+
+In the next lesson, we'll start communicating over the accepted client socket: first by receiving bytes from the client, then by sending bytes back.
+
+That is where the TCP server starts becoming an HTTP server.

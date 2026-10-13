@@ -1,57 +1,93 @@
 ---
 title: Where to Go Next
-description: Review the server you built and choose the next experiment.
+description: What our simple HTTP server cannot do yet, and a few experiments to make it better.
 ---
 
-You started with an operating-system socket and finished with a small HTTP-speaking program. The code
-is intentionally compact, but its boundaries resemble those in larger servers.
+You built a local HTTP server with an inspectable request path. That is the point of a simple server: nothing is hidden, so you can see how every part works.
 
-## Trace the complete path
+But a simple server also has limits. In this page, we look at them honestly. Then you get a list of experiments, so you can fix some of them yourself.
 
-For every request, your server now:
+## What Our Server Can't Do
 
-1. accepts a connected socket from the listening socket;
-2. reads bytes until the HTTP header terminator;
-3. parses the request line and headers;
-4. splits the path and query string;
-5. selects a route or static file;
-6. serializes a status line, response headers and body;
-7. sends all response bytes; and
-8. closes the connection.
+- It serves one client at a time - While it talks to one client, everyone else waits. A client that connects and says nothing blocks the others until the 5-second timeout.
+- It handles one request per connection - We always send `Connection: close`, so a browser must open a new connection for every file. A page with an image and a stylesheet needs three.
+- It has no size limits - A client can send headers forever, and we keep reading. We also load each file fully into memory before sending it.
+- It knows only six file types - Any other extension is sent as `application/octet-stream`, and the extensions are case-sensitive, so `STYLE.CSS` is not recognized as CSS.
+- It does not decode URLs - A browser asks for `my page.html` as `/my%20page.html`, and we look for a file with `%20` in its name.
+- Only `/` has a default page - A request for `/docs/` does not serve `docs/index.html`.
+- It only supports `GET` and `HEAD` - Anything else gets a `501`, and we never read a request body.
+- It sends no `Date` header and no caching headers. The browser downloads every file again on every visit.
+- It has no HTTPS. Everything travels as plain text, and the server only listens on `127.0.0.1`, so only your own computer can reach it.
 
-That is the important mental model. Frameworks add safer parsing, concurrency, middleware, logging,
-configuration and application features around the same exchange.
+These are deliberate omissions for a constrained exercise, but they would be important defects in a server exposed to untrusted clients.
 
-<WhatHappened>
-HTTP stopped being an abstract “web request.” You saw it as structured bytes carried by a TCP stream,
-with your own code responsible for deciding where transport ends and application behavior begins.
-</WhatHappened>
+## Final demonstration: prove the server works
 
-## Useful next experiments
+Complete this checklist before opening the optional experiments. Use the finished `server.py` and `public/` files from the previous stage (or the separately packaged `reference/` directory only **after** your own build is complete).
 
-Choose one change at a time:
+- [ ] **GET and file types:** Run `curl -i http://127.0.0.1:8000/` and `curl -i http://127.0.0.1:8000/style.css`. Record the status and `Content-Type` for both.
+- [ ] **HEAD and missing resource:** Run `curl -I http://127.0.0.1:8000/` and `curl -i http://127.0.0.1:8000/missing`. Explain why HEAD advertises a `Content-Length` but transmits no body.
+- [ ] **Broken request:** Use the raw-socket missing-Host command from the error stage. Record its status and identify the validation step that rejected it.
+- [ ] **File boundary:** Run `curl --path-as-is -i http://127.0.0.1:8000/../server.py` and verify `404`. Explain the `resolve()` and `parents` check.
+- [ ] **Independent change:** Create a new file under `public/` or add a variation to the server without copying a full replacement file. Record the behavior before the change, the change itself, and how you verified it.
+- [ ] **Explain the mechanism:** Trace `accept()` -> `read_request()` -> `parse_request()` -> `serve()` -> `build_response()` -> `sendall()`; state two limitations that make the result unsuitable for the public internet.
 
-- **Support `HEAD`.** Return the same headers as `GET`, but omit the body.
-- **Add response headers.** Let `make_response()` accept an explicit header mapping.
-- **Parse a small body.** Read exactly the number of bytes announced by `Content-Length`.
-- **Handle clients concurrently.** Give each connection to a thread or study `asyncio`.
-- **Keep connections alive.** Process multiple requests while carefully handling message boundaries.
-- **Write tests.** Feed raw byte strings to the parser and assert exact response bytes.
+If you have the packaged ZIP, the optional `reference/check_acceptance.py` script can run a set of regression tests including a fault-injected HEAD 500. The script is a supplement, not a substitute for explaining the behavior or demonstrating your own modification. Run it from `reference/` with `python3 check_acceptance.py` and interpret its output.
 
-<TryIt>
-Write a test for a UTF-8 response body that asserts `Content-Length` equals the encoded byte count.
-Then write a traversal test proving that `/static/../../server.py` returns `404`.
-</TryIt>
+## Experiments
 
-## Compare with production
+The experiments are in three groups, from small to big. Each one changes only a small part of the code, and you already know all the pieces. Pick any order.
 
-Read the request-handling path of a production Python server such as Uvicorn or Gunicorn. You do not
-need to understand every branch. Look for the concepts you now recognize: accept loops, protocol
-parsers, connection state, timeouts and response serialization.
+### Warm-ups
 
-<Note>
-Rebuilding a simplified system is not about replacing mature infrastructure. It gives you a precise
-model for debugging and choosing that infrastructure with better questions.
-</Note>
+**1. Make extensions case-insensitive.**
+Copy `public/style.css` to `public/UP.CSS` and open `http://127.0.0.1:8000/UP.CSS` with `curl -i`. It arrives as `application/octet-stream`, so a browser would ignore it as a stylesheet. Fix it so `.CSS` and `.css` are treated the same.
+*Hint: strings have a `.lower()` method.*
 
-You built the important path yourself. Now break it, instrument it, and make one part better.
+**2. Add `Date` and `Server` headers.**
+Many servers emit a `Date` header and optionally identify their software with `Server`. Add both to `build_response()`.
+*Hint: `email.utils.formatdate(usegmt=True)` returns a date in the format HTTP expects.*
+
+**3. Send a custom 404 page.**
+Create `public/404.html`, and send it with the `404` status instead of the plain text message.
+*Hint: the status stays `404`, and only the body and the `Content-Type` change.*
+
+### Bigger
+
+**4. Serve a default page for folders.**
+Make `/docs/` send `public/docs/index.html`.
+*Hint: `Path` has an `is_dir()` method. Be careful, the `public` folder itself is not in its own `parents`, which is why we needed a special case for `/`.*
+
+**5. Decode URLs.**
+Create a file named `my page.html`, and make `/my%20page.html` find it. Record the initial 404, then the final 200, and explain how you tested encoded traversal.
+*Hint: `urllib.parse.unquote()` decodes `%20`. Decode before you build the file path, then test that `curl --path-as-is -i http://127.0.0.1:8000/%2e%2e/server.py` still gets a `404`.*
+
+**6. Limit the size of a request.**
+Stop reading after 8,192 bytes without a header terminator, and answer `431 Request Header Fields Too Large`. Record whether the oversized input is rejected while a small GET still succeeds.
+*Hint: `read_request()` is the only place that needs to know about the limit. To test it, send 20,000 bytes without `\r\n\r\n`.*
+
+### Stretch
+
+**7. Serve many clients at once.**
+Record the delay before your change, the time behavior afterward, and what happens if multiple clients disconnect. First, see the problem. In one terminal, run the silent client from the error page, then run `curl -i http://127.0.0.1:8000/` in another. `curl` waits until the timeout. Now fix it so `curl` answers immediately.
+*Hint: look at the `threading` module. The work for one connection already lives in `handle()`, so each connection can run in its own thread.*
+
+**8. Handle many requests on one connection.**
+Stop sending `Connection: close`, and keep reading requests from the same connection until the client leaves or goes silent.
+*Hint: `read_request()` must not throw away bytes that belong to the next request, and a client that sends `Connection: close` still expects the server to close.*
+
+There are many more ideas. You could redirect an old path to a new one with a `301` and a `Location` header. You could let Python guess content types with the `mimetypes` module. You could add `Last-Modified` and answer repeat visits with `304 Not Modified`.
+
+## Keep Reading
+
+To see what a finished server does more run Python's own server next to yours:
+
+```bash title="Terminal"
+python3 -m http.server 8001
+```
+
+Request the same pages from both with `curl -i` and compare the headers. Every difference is something to learn about.
+
+For the protocol requirements, see [RFC 9110: HTTP Semantics](https://www.rfc-editor.org/rfc/rfc9110.html) and [RFC 9112: HTTP/1.1](https://www.rfc-editor.org/rfc/rfc9112.html). You now know enough to read the important parts.
+
+Choose one extension and retain its before/after evidence. A working request, a controlled failure and a reasoned explanation are stronger evidence of learning than reaching the end of a page.

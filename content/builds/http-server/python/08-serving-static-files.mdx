@@ -1,77 +1,309 @@
 ---
 title: Serving Static Files
-description: Read a file safely, choose a MIME type and return its bytes.
+description: Replace the routes table with real files on disk and label each response with the right Content-Type.
 ---
 
-Static files connect routing to the filesystem. The main challenge is not reading a file—it is making
-sure an untrusted URL cannot escape the directory we intend to publish.
+Our pages currently live inside the Python code as strings. That works for two pages, but a real site is made of files: pages, stylesheets, images. Nobody wants to rewrite those as strings.
 
-## Create a public file
+In this lesson, we teach the server to turn a target into a file on disk and send its contents. These are called **static files**, because the server sends them exactly as they are stored, without changing them.
 
-Add `public/index.html`:
+The idea is simple. We put the files in a folder, and a request for `/index.html` sends back `public/index.html`.
+
+## Create a Public Folder
+
+Next to `server.py`, create a folder named `public` with two files inside. This `public/index.html` is **not** the root-level `index.html` used in the introduction; the custom server serves only files under `public/`:
+
+```text
+server.py
+public/
+  index.html
+  style.css
+```
 
 ```html title="public/index.html"
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head><meta charset="utf-8"><title>Tiny server</title></head>
-  <body><h1>It works.</h1></body>
+<head>
+    <title>Server Message</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>Hi from the file</h1>
+</body>
 </html>
 ```
 
-## Resolve paths inside a fixed root
+```css title="public/style.css"
+h1 { color: teal; }
+```
 
-Add the static file helper:
+The path check is intended to serve files inside `public/` only. Do not use this learning server to handle untrusted traffic; its request parsing and resource limits are intentionally incomplete.
+
+## Find the File for a Target
+
+At the top of `server.py`, add an import and two constants:
 
 ```python title="server.py"
-import mimetypes
 from pathlib import Path
-from urllib.parse import unquote
 
-PUBLIC_ROOT = Path(__file__).parent.joinpath("public").resolve()
+PUBLIC_DIR = (Path(__file__).parent / "public").resolve()
 
-
-def serve_static(url_path: str) -> bytes:
-    relative = unquote(url_path.removeprefix("/static/"))
-    candidate = PUBLIC_ROOT.joinpath(relative).resolve()
-
-    if PUBLIC_ROOT not in candidate.parents or not candidate.is_file():
-        return make_response("404 Not Found", b"file not found\n")
-
-    content_type, _encoding = mimetypes.guess_type(candidate.name)
-    return make_response(
-        "200 OK",
-        candidate.read_bytes(),
-        content_type or "application/octet-stream",
-    )
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+}
 ```
 
-Connect it near the top of `route()`:
+`PUBLIC_DIR` is the full path of our folder. `CONTENT_TYPES` connects a file extension to the `Content-Type` header. The browser needs this label to know what it received: a page to show, a stylesheet to apply, or an image to draw.
 
-```python
-if path.startswith("/static/"):
-    return serve_static(path)
+Now replace `ROUTES` and `route()` with `serve()`:
+
+```python title="server.py"
+def serve(target: str) -> tuple[int, str, bytes, str]:
+    path = target.split("?", 1)[0]
+    if path == "/":
+        path = "/index.html"
+
+    file = (PUBLIC_DIR / path.lstrip("/")).resolve()
+    if PUBLIC_DIR not in file.parents or not file.is_file():
+        return 404, "Not Found", b"404 Not Found", "text/plain; charset=utf-8"
+
+    content_type = CONTENT_TYPES.get(file.suffix, "application/octet-stream")
+    return 200, "OK", file.read_bytes(), content_type
 ```
 
-Now `http://127.0.0.1:8000/static/index.html` should render in a browser.
+Let's walk through it:
 
-<Why>
-Calling `resolve()` normalizes components such as `..`. Checking the resolved parent keeps a request
-like `/static/../../server.py` outside the published root. Never join an untrusted path and read it
-without enforcing a boundary.
-</Why>
+1. **Find the path.** : We cut off the query string, like we did for routes.
+2. **Choose the home page.** : A request for `/` has no file name, so we use `index.html`.
+3. **Find the file.** : We join the path to `PUBLIC_DIR`. `lstrip("/")` removes the leading slash, so `/style.css` becomes `style.css`. `resolve()` turns the result into a full path.
+4. **Check it.** : If the file is not inside `PUBLIC_DIR`, or is not a real file, we answer `404 Not Found`.
+5. **Pick the Content-Type.** : We look up the extension. If we don't know it, we use `application/octet-stream`, which means "some bytes, type unknown".
+6. **Send the bytes.** : `read_bytes()` returns the file's contents as bytes, which is exactly what `build_response()` expects.
 
-## MIME types guide the client
-
-The same bytes can be interpreted as text, an image, CSS, or a download. `Content-Type` communicates
-the intended media type. `mimetypes.guess_type()` uses the filename extension; unknown extensions use
-the safe generic type `application/octet-stream`.
+The function now returns four values: the status, the reason, the body and the content type.
 
 <Warning>
-This helper demonstrates the core idea, not a hardened file server. Production systems also handle
-symbolic links, conditional requests, ranges, caching, permission errors and platform differences.
+The check in step 4 is not optional. A target like `/../server.py` means "go one folder up", which would leave `public` and reach our source code.
+`resolve()` cleans up the `..`, and the `PUBLIC_DIR not in file.parents` test then rejects any file outside the folder. Without it, a client could read any file the server can read.
 </Warning>
 
+<Why>
+Why do we read files as bytes and not as text?
+
+Because a file might not be text. An image is just bytes, and reading it as text would break it. Bytes work for every kind of file, and since a response body is bytes anyway, there is nothing to convert.
+</Why>
+
+## Use It in main
+
+In `main()`, call `serve()` instead of `route()`, and pass the content type to `build_response()`.
+Only the end of the `with conn:` block changes:
+
+```python title="server.py"
+                    status, reason, body, content_type = serve(target)
+                    print(f"  -> {status} {reason}")
+                    response = build_response(
+                        status, reason, body, content_type, head_only=(method == "HEAD")
+                    )
+                    conn.sendall(response)
+```
+
+## Run The Server
+
+Here is the full file:
+
+```python title="server.py"
+import socket
+from pathlib import Path
+
+HOST = "127.0.0.1"
+PORT = 8000
+PUBLIC_DIR = (Path(__file__).parent / "public").resolve()
+
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+}
+
+def read_request(conn: socket.socket) -> bytes:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = conn.recv(1024)
+        if not chunk:  # the client closed the connection
+            break
+        data += chunk
+    return data
+
+def parse_request(raw: bytes) -> tuple[str, str, str, dict[str, str]]:
+    if b"\r\n\r\n" not in raw:
+        raise ValueError("incomplete request")
+
+    head = raw.split(b"\r\n\r\n", 1)[0].decode("iso-8859-1")
+    lines = head.split("\r\n")
+
+    parts = lines[0].split(" ")
+    if len(parts) != 3:
+        raise ValueError("malformed request line")
+    method, target, version = parts
+
+    headers = {}
+    for line in lines[1:]:
+        name, sep, value = line.partition(":")
+        if not sep:
+            raise ValueError("malformed header")
+        headers[name.strip().lower()] = value.strip()
+
+    return method, target, version, headers
+
+def build_response(
+    status: int,
+    reason: str,
+    body: bytes,
+    content_type: str = "text/plain; charset=utf-8",
+    head_only: bool = False,
+) -> bytes:
+    head = (
+        f"HTTP/1.1 {status} {reason}\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("iso-8859-1")
+    return head if head_only else head + body
+
+def serve(target: str) -> tuple[int, str, bytes, str]:
+    path = target.split("?", 1)[0]
+    if path == "/":
+        path = "/index.html"
+
+    file = (PUBLIC_DIR / path.lstrip("/")).resolve()
+    if PUBLIC_DIR not in file.parents or not file.is_file():
+        return 404, "Not Found", b"404 Not Found", "text/plain; charset=utf-8"
+
+    content_type = CONTENT_TYPES.get(file.suffix, "application/octet-stream")
+    return 200, "OK", file.read_bytes(), content_type
+
+def main() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((HOST, PORT))
+        server.listen()
+        print(f"listening on http://{HOST}:{PORT} (Press Ctrl+c to stop)")
+
+        try:
+            while True:
+                conn, addr = server.accept()
+                with conn:
+                    print(f"connection from {addr}")
+                    raw = read_request(conn)
+                    try:
+                        method, target, version, headers = parse_request(raw)
+                    except ValueError as exc:
+                        print(f"bad request: {exc}")
+                        continue
+
+                    print(f"{method} {target} {version}")
+                    for name, value in headers.items():
+                        print(f"  {name}: {value}")
+
+                    status, reason, body, content_type = serve(target)
+                    print(f"  -> {status} {reason}")
+                    response = build_response(
+                        status, reason, body, content_type, head_only=(method == "HEAD")
+                    )
+                    conn.sendall(response)
+        except KeyboardInterrupt:
+            print("\nbye")
+
+if __name__ == "__main__":
+    main()
+```
+
+The default content type is now text/plain, so function `build_response()` no longer assumes HTML.
+Start the server and from a second terminal, ask for the stylesheet:
+
+```bash title="Terminal"
+curl -i http://127.0.0.1:8000/style.css
+```
+
+Expected output:
+```text
+HTTP/1.1 200 OK
+Content-Type: text/css; charset=utf-8
+Content-Length: 20
+Connection: close
+
+h1 { color: teal; }
+```
+
+`Content-Length` is the file's size in bytes. Yours may differ by one byte, depending on whether your editor adds a newline at the end. You can check with `wc -c public/style.css`.
+
+Now ask for a file that doesn't exist:
+
+```bash title="Terminal"
+curl -i http://127.0.0.1:8000/missing.html
+```
+
+Expected output:
+
+```text
+HTTP/1.1 404 Not Found
+Content-Type: text/plain; charset=utf-8
+Content-Length: 13
+Connection: close
+
+404 Not Found
+```
+
+Finally, try to escape the `public` folder. The `--path-as-is` option stops `curl` from tidying up the `..` before it sends the request:
+
+```bash title="Terminal"
+curl --path-as-is -i http://127.0.0.1:8000/../server.py
+```
+
+You get the same `404 Not Found`. The file `server.py` exists, but it is outside `public`, so our server refuses to send it.
+
+Now open `http://127.0.0.1:8000` in your browser. The page appears with a teal heading. Look at the server's terminal, and you will see something like this:
+
+```text
+GET / HTTP/1.1
+  ...
+  -> 200 OK
+GET /style.css HTTP/1.1
+  ...
+  -> 200 OK
+GET /favicon.ico HTTP/1.1
+  ...
+  -> 404 Not Found
+```
+
+One page needed three requests. The browser read `index.html`, found the `<link>` to `style.css`, and asked for it on its own.
+
+<WhatHappened>
+The client sent a request, and we read and parsed it as before.
+
+`serve()` cut the query string off the target, changed `/` to `/index.html`, and joined the path to the `public` folder. It checked that the result was a real file inside that folder. If not, it returned `404`.
+
+If the file passed, `serve()` read its bytes and looked up its `Content-Type` from the extension. `build_response()` put the status line, the headers and the bytes together, and `conn.sendall()` sent them. The browser used the `Content-Type` to decide what to do with each file: show the page, apply the stylesheet.
+</WhatHappened>
+
 <TryIt>
-Add `public/styles.css`, link it from the HTML file using `/static/styles.css`, and confirm in curl that
-the CSS response uses a `text/css` content type.
+Put any picture named `photo.png` in the `public` folder and open `http://127.0.0.1:8000/photo.png` in your browser. It appears, even though we changed no code. Why did it work?
 </TryIt>
+
+<TryIt>
+Delete the `".css"` line from `CONTENT_TYPES` and restart the server. Reload the page in your browser. The heading loses its color, because the stylesheet now arrives as `application/octet-stream` and browsers ignore a stylesheet that is not labelled `text/css`.
+
+Put the line back before you continue.
+</TryIt>
+
+Our server can now serve a whole folder of files. But we have been testing only the happy path. A request can be broken, a method can be unsupported, and something can go wrong while reading a file.
+Next, we make the server answer all of these properly.

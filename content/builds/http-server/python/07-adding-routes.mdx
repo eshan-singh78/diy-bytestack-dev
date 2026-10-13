@@ -3,71 +3,294 @@ title: Adding Routes
 description: Select a response from the HTTP method and normalized request path.
 ---
 
-A server becomes useful when different request targets produce different behavior. Routing is the
-small decision layer between parsing a request and serializing a response.
+Our server can read a request and send a response, but it gives the same answer to everyone.
+Ask for `/about`, `/favicon.ico` or `/does-not-exist` and you always get the same heading with `200 OK`.
 
-## Separate path from query
+That last one is a lie. A `200` says "here is what you asked for", and we have nothing of the kind.
 
-Python's URL parser can split the request target:
+In this page, we teach the server to look at the **target** and decide what to send.
+A **route** is a rule that connects a path, such as `/about`, to a response. When no route matches, we answer with a real `404 Not Found`.
 
-```python title="server.py"
-from urllib.parse import parse_qs, urlsplit
+## Add a Routes Table
 
+The target is the second value on the request line. We have been printing it since before and it can look like this:
 
-def route(request: Request) -> bytes:
-    url = urlsplit(request.target)
-    path = url.path
-    query = parse_qs(url.query)
-
-    if request.method != "GET":
-        return make_response("405 Method Not Allowed", b"method not allowed\n")
-
-    if path == "/":
-        return make_response("200 OK", b"tiny server is running\n")
-
-    if path == "/hello":
-        name = query.get("name", ["builder"])[0]
-        body = f"Hello, {name}!\n".encode("utf-8")
-        return make_response("200 OK", body)
-
-    return make_response("404 Not Found", b"not found\n")
+```text
+/
+/about
+/about?lang=en
 ```
 
-Then replace the inline response in `main()`:
+Everything before the `?` is the **path**. Everything after it is the **query string**, extra information sent along with the request.
+We route by the path only, so `/about` and `/about?lang=en` should both reach the same page.
+
+Cutting the target at the first `?` gives us the path, so:
 
 ```python
-request = parse_request(read_request(connection))
-connection.sendall(route(request))
+path = target.split("?", 1)[0]
 ```
 
-The router checks the method before the path. This makes its contract explicit: our routes currently
-support only `GET`.
+If there is no `?`, `split` returns the whole target as the only item, so this works for both cases.
 
-## Status codes are part of the interface
+The simplest way to connect paths to pages is a dictionary. The key is the path, and the value is the page to send.
 
-The status line tells a client the broad outcome before it interprets the body:
+Add `ROUTES` and `route()` below `build_response()`:
 
-| Code | Meaning in our server |
-| --- | --- |
-| `200` | The route produced a normal response. |
-| `404` | No route matched the path. |
-| `405` | The path may exist, but the method is unsupported. |
+```python title="server.py"
+ROUTES = {
+    "/": "Home",
+    "/about": "About",
+}
+
+def route(target: str) -> tuple[int, str, bytes]:
+    path = target.split("?", 1)[0]
+    page = ROUTES.get(path)
+    if page is None:
+        return 404, "Not Found", b"404 Not Found"
+    return 200, "OK", page.encode("utf-8")
+```
+
+Let's walk through it:
+
+1. **Find the path.** : We cut off the query string, as we saw above.
+2. **Look it up.** : `ROUTES.get(path)` returns the page for that path, or `None` if the path is not in the table.
+3. **No match.** : We return the status `404` with the reason `Not Found`, and a small page that says so.
+4. **Match.** We return `200 OK` and the page.
+
+The function gives back three values:
+- the status
+- the reason and
+- the body.
+These are exactly what `build_response()` needs, so the two fit together.
+In the next pages, we will keep this shape and only change how `route()` finds the body.
+
+## Use It in main
+
+In `main()`, replace the hard-coded status and page with a call to `route()`.
+Only the end of the `with conn:` block changes:
+
+```python title="server.py"
+                    print(f"{method} {target} {version}")
+                    for name, value in headers.items():
+                        print(f"  {name}: {value}")
+ 
+                    status, reason, body = route(target)
+                    print(f"  -> {status} {reason}")
+                    response = build_response(status, reason, body)
+                    conn.sendall(response)
+```
+
+The status is no longer written by hand. `route()` chooses it, and we print it so the server's terminal shows what each request got.
+
+## HEAD Requests
+
+In the introduction, we said our server handles `GET` and `HEAD`.
+A `HEAD` request asks for the same response as `GET`, but without the body.
+Clients use it to check that a page exists and how big it is, without downloading it.
+
+The important detail is that `Content-Length` must still show the size of the body we **would** have sent. So we cannot just pass an empty body. Instead, we teach `build_response()` to leave the body out.
+
+Update `build_response()`:
+
+```python title="server.py"
+def build_response(
+    status: int,
+    reason: str,
+    body: bytes,
+    content_type: str = "text/html; charset=utf-8",
+    head_only: bool = False,
+) -> bytes:
+    head = (
+        f"HTTP/1.1 {status} {reason}\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("iso-8859-1")
+    return head if head_only else head + body
+```
+
+The length is still computed from `body`, but with `head_only` we send only the head. Then, in `main()`, pass it in:
+
+```python title="server.py"
+                    response = build_response(
+                        status, reason, body, head_only=(method == "HEAD")
+                    )
+```
 
 <Note>
-A production `405` response should also include an `Allow` header describing supported methods. Our
-response builder can be extended to accept extra headers.
+Other methods, such as `POST` or `DELETE`, are treated like `GET` for now. In the error-handling page, we will reject them properly, together with broken requests.
 </Note>
 
-Test each branch:
+## Run The Server
 
-```bash
-curl -i 'http://127.0.0.1:8000/'
-curl -i 'http://127.0.0.1:8000/hello?name=Ada'
-curl -i 'http://127.0.0.1:8000/missing'
-curl -i -X POST 'http://127.0.0.1:8000/hello'
+Here is the full code:
+
+```python title="server.py"
+import socket
+
+HOST = "127.0.0.1"
+PORT = 8000
+
+def read_request(conn: socket.socket) -> bytes:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = conn.recv(1024)
+        if not chunk:  # the client closed the connection
+            break
+        data += chunk
+    return data
+
+def parse_request(raw: bytes) -> tuple[str, str, str, dict[str, str]]:
+    if b"\r\n\r\n" not in raw:
+        raise ValueError("incomplete request")
+ 
+    head = raw.split(b"\r\n\r\n", 1)[0].decode("iso-8859-1")
+    lines = head.split("\r\n")
+ 
+    parts = lines[0].split(" ")
+    if len(parts) != 3:
+        raise ValueError("malformed request line")
+    method, target, version = parts
+ 
+    headers = {}
+    for line in lines[1:]:
+        name, sep, value = line.partition(":")
+        if not sep:
+            raise ValueError("malformed header")
+        headers[name.strip().lower()] = value.strip()
+ 
+    return method, target, version, headers
+
+def build_response(
+    status: int,
+    reason: str,
+    body: bytes,
+    content_type: str = "text/html; charset=utf-8",
+    head_only: bool = False,
+) -> bytes:
+    head = (
+        f"HTTP/1.1 {status} {reason}\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("iso-8859-1")
+    return head if head_only else head + body
+
+ROUTES = {
+    "/": "Home",
+    "/about": "About",
+}
+
+def route(target: str) -> tuple[int, str, bytes]:
+    path = target.split("?", 1)[0]
+    page = ROUTES.get(path)
+    if page is None:
+        return 404, "Not Found", b"404 Not Found"
+    return 200, "OK", page.encode("utf-8")
+
+def main() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((HOST, PORT))
+        server.listen()
+        print(f"listening on http://{HOST}:{PORT} (Press Ctrl+c to stop)")
+        
+        try:
+            while True:
+                conn, addr = server.accept()
+                with conn:
+                    print(f"connection from {addr}")
+                    raw = read_request(conn)
+                    try:
+                        method, target, version, headers = parse_request(raw)
+                    except ValueError as exc:
+                        print(f"bad request: {exc}")
+                        continue
+ 
+                    print(f"{method} {target} {version}")
+                    for name, value in headers.items():
+                        print(f"  {name}: {value}")
+                        
+                    status, reason, body = route(target)
+                    print(f"    -> {status} {reason}")
+                    response = build_response(status, reason, body, head_only=(method == "HEAD"))
+                    conn.sendall(response)
+        except KeyboardInterrupt:
+            print("\nbye")
+
+if __name__ == "__main__":
+    main()
 ```
 
+Start the server and from a second terminal, ask for a page that exists:
+
+```bash title="Terminal"
+curl -i http://127.0.0.1:8000/
+```
+
+Expected output:
+```text
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+Content-Length: 4
+Connection: close
+
+Home
+```
+
+Now ask for one that doesn't:
+```bash title="Terminal"
+curl -i http://127.0.0.1:8000/does-not-exist
+```
+
+Expected output:
+```text
+HTTP/1.1 404 Not Found
+Content-Type: text/html; charset=utf-8
+Content-Length: 13
+Connection: close
+
+404 Not Found
+```
+
+A query string doesn't change the route, so this still returns `200 OK`:
+```bash title="Terminal"
+curl -i "http://127.0.0.1:8000/about?lang=en"
+```
+
+Finally, send a `HEAD` request. The `-I` option makes `curl` use `HEAD` method:
+```bash title="Terminal"
+curl -I http://127.0.0.1:8000/
+```
+
+Expected output:
+```text
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+Content-Length: 4
+Connection: close
+```
+
+The headers match the `GET` response, including `Content-Length: 4`, but no body follows.
+
 <TryIt>
-Add a `/health` route that returns `OK` as plain text. Keep the route function responsible for
-decisions and the response function responsible for serialization.
+Now open `http://127.0.0.1:8000` in your browser. Try the same link we used with `curl` command.
+
+You will also see the favicon request from the last page again, and this time the answer is honest `404 Not Found`.
 </TryIt>
+
+<WhatHappened>
+The client connected and sent its request, and we read and parsed it as before.
+Then `route()` cut the query string off the target and looked the path up in `ROUTES`. If it found a page, it returned `200 OK` with that page. If not, it returned `404 Not Found` with a short error page.
+
+`build_response()` turned those three values into bytes. For a `HEAD` request, it sent only the head, with a `Content-Length` that still described the body we left out.
+</WhatHappened>
+
+<TryIt>
+Add a third route, such as `"/contact"`, with content of your own. Restart the server and visit it in your browser.
+Then try `http://127.0.0.1:8000/about/` with a trailing slash, and `http://127.0.0.1:8000/About` with a capital letter. Both return `404`. Why does a dictionary lookup treat them as different paths?
+</TryIt>
+
+Our server can now choose what to send, but every page lives inside our Python code as a string. A real site has dozens of pages, images and stylesheets, and nobody wants to write them as strings. Next, we teach the server to find real files on disk and send them.

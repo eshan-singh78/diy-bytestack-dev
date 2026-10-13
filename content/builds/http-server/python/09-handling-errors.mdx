@@ -1,83 +1,522 @@
 ---
 title: Handling Errors
-description: Turn malformed input and unexpected failures into controlled HTTP responses.
+description: Reject malformed HTTP/1.1 requests, preserve HEAD semantics, and recover from ordinary request failures.
 ---
 
-Network input is untrusted and incomplete by nature. A useful server fails one connection without
-bringing down the accept loop.
+So far we have tested only the happy path. Real clients don't stay on it. A request can be broken, a method can be unsupported, our own code can fail, and a client can connect and never say anything.
 
-## Separate expected client errors
+Right now, each of these ends badly:
 
-Create a dedicated exception:
+- A broken request gets no reply at all.
+- A `POST` request is treated like a `GET`.
+- An unexpected exception can stop the accept loop.
+- A silent client blocks the server, because we wait for its request forever.
+
+In this lesson, we address these four problems within our local teaching server. Status codes help us here. Codes starting with `4` mean "the client did something wrong", and codes starting with `5` mean "the server failed".
+We already use `404`. Here is what we will add:
+
+- 400 Bad Request: The start line, Host header or other request syntax is malformed.
+- 505 HTTP Version Not Supported: The request uses a version our server does not implement.
+- 501 Not Implemented: The method is not GET or HEAD.
+- 500 Internal Server Error: Something fails in our server code.
+- Timeout: If a blocking socket operation receives no progress for 5 seconds, we close that connection.
+
+## Validate the request before serving a file
+
+The earlier parser split a start line and stored headers in a dictionary. That dictionary could silently overwrite a duplicate `Host` field, and it accepted an unsupported version such as `HTTP/99.99`. This final stage requires a single valid `Host` field, HTTP/1.1, and an origin-form target such as `/index.html?lang=en`.
+
+At the top of `server.py`, add `import re` and `import ipaddress`. Above `parse_request()`, add the following helpers:
 
 ```python title="server.py"
-class BadRequest(Exception):
+HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+HOST_VALUE = re.compile(
+    r"(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])"
+    r"(?::[0-9]{1,5})?"
+)
+
+class UnsupportedHTTPVersion(ValueError):
     pass
+
+
+def valid_host(value: str) -> bool:
+    if HOST_VALUE.fullmatch(value) is None:
+        return False
+    if value.startswith("["):
+        closing = value.index("]")
+        try:
+            ipaddress.IPv6Address(value[1:closing])
+        except ValueError:
+            return False
+        port_part = value[closing + 1:]
+    else:
+        port_part = ":" + value.split(":", 1)[1] if ":" in value else ""
+    return not port_part or int(port_part[1:]) <= 65535
 ```
 
-Raise `BadRequest` from parsing code when the request is incomplete or malformed. For example:
-
-```python
-def parse_request(data: bytes) -> Request:
-    head, separator, _body = data.partition(b"\r\n\r\n")
-    if not separator:
-        raise BadRequest("incomplete headers")
-
-    try:
-        lines = head.decode("iso-8859-1").split("\r\n")
-        method, target, version = lines[0].split(" ", 2)
-        headers = dict(line.split(":", 1) for line in lines[1:])
-    except (ValueError, UnicodeError) as error:
-        raise BadRequest("malformed request") from error
-
-    normalized = {name.strip().lower(): value.strip() for name, value in headers.items()}
-    return Request(method, target, version, normalized)
-```
-
-## Protect the connection handler
-
-Put one request behind a clear error boundary:
+Now **replace** the previous `parse_request()` with:
 
 ```python title="server.py"
-def handle_connection(connection: socket.socket) -> None:
-    try:
-        request = parse_request(read_request(connection))
-        response = route(request)
-    except BadRequest as error:
-        response = make_response("400 Bad Request", f"{error}\n".encode())
-    except (OSError, ValueError) as error:
-        print(f"request failed: {error}")
-        response = make_response("500 Internal Server Error", b"server error\n")
+def parse_request(raw: bytes) -> tuple[str, str, str, dict[str, str]]:
+    if b"\r\n\r\n" not in raw:
+        raise ValueError("incomplete request headers")
 
-    try:
-        connection.sendall(response)
-    except OSError as error:
-        print(f"response failed: {error}")
+    head = raw.split(b"\r\n\r\n", 1)[0].decode("iso-8859-1")
+    lines = head.split("\r\n")
+    parts = lines[0].split(" ")
+    if len(parts) != 3 or not all(parts):
+        raise ValueError("malformed request line")
+    method, target, version = parts
+
+    if HEADER_NAME.fullmatch(method) is None:
+        raise ValueError("invalid method")
+    if (not target.startswith("/") or "#" in target or "\\" in target
+            or any(ord(c) < 33 or ord(c) > 126 for c in target)):
+        raise ValueError("only origin-form request targets are supported")
+    if re.fullmatch(r"HTTP/[0-9]+\.[0-9]+", version) is None:
+        raise ValueError("malformed HTTP version")
+    if version != "HTTP/1.1":
+        raise UnsupportedHTTPVersion("only HTTP/1.1 is supported")
+
+    headers: dict[str, str] = {}
+    host_values: list[str] = []
+    for line in lines[1:]:
+        name, sep, value = line.partition(":")
+        if not sep or HEADER_NAME.fullmatch(name) is None:
+            raise ValueError("malformed header name")
+        value = value.strip(" \t")
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("invalid header value")
+        name = name.lower()
+        if name == "host":
+            host_values.append(value)
+        headers[name] = value
+
+    if len(host_values) != 1 or not valid_host(host_values[0]):
+        raise ValueError("HTTP/1.1 requires one valid Host header")
+    return method, target, version, headers
 ```
 
-Call it from the accept loop with `handle_connection(connection)`.
+The parser checks the original header lines before creating the mapping, so it can reject duplicate `Host` fields. We use `400` for malformed request syntax and `505` for a syntactically recognizable but unsupported HTTP version. `HOST_VALUE` and `valid_host()` cover common ASCII hostnames and bracketed IPv6 literals with limited port validation; this is still not a complete RFC URI parser.
+
+## Add an error response helper
+
+After `build_response()`, add this function. Its `head_only` argument keeps the `Content-Length` of the corresponding GET representation while sending no body for HEAD:
+
+```python title="server.py"
+def error_response(status: int, reason: str, head_only: bool = False) -> bytes:
+    body = f"{status} {reason}".encode("utf-8")
+    return build_response(status, reason, body, head_only=head_only)
+```
+
+## Handle One Request in a Function
+
+The code inside `main()` is getting long, and now it needs to answer errors in several places.
+Let's move the work for a single request into its own function, `handle()`.
+
+Add it below `serve()`:
+
+```python title="server.py"
+def handle(conn: socket.socket) -> None:
+    method = None  # Preserve HEAD semantics if an error happens after parsing.
+    try:
+        raw = read_request(conn)
+        try:
+            method, target, version, headers = parse_request(raw)
+        except UnsupportedHTTPVersion as exc:
+            print(f"unsupported version: {exc}")
+            conn.sendall(error_response(505, "HTTP Version Not Supported"))
+            return
+        except ValueError as exc:
+            print(f"bad request: {exc}")
+            conn.sendall(error_response(400, "Bad Request"))
+            return
+
+        print(f"{method} {target} {version}")
+        for name, value in headers.items():
+            print(f"  {name}: {value}")
+
+        if method not in ("GET", "HEAD"):
+            print("  -> 501 Not Implemented")
+            conn.sendall(error_response(501, "Not Implemented"))
+            return
+
+        status, reason, body, content_type = serve(target)
+        print(f"  -> {status} {reason}")
+        response = build_response(
+            status, reason, body, content_type, head_only=(method == "HEAD")
+        )
+        conn.sendall(response)
+    except (TimeoutError, ConnectionError):
+        # The peer is silent, or the transport failed. main() closes this socket.
+        raise
+    except Exception as exc:
+        print(f"  server error: {exc!r}")
+        try:
+            conn.sendall(error_response(
+                500, "Internal Server Error", head_only=(method == "HEAD")
+            ))
+        except OSError as send_exc:
+            print(f"  could not send 500 response: {send_exc!r}")
+```
+
+The request handler now distinguishes malformed syntax (`400`), unsupported protocol versions (`505`), and unsupported methods (`501`). It catches connection failures separately from unexpected application exceptions. If an exception occurs after a valid HEAD request has been parsed, its `500` response also has no body.
+
+The inner response send is guarded against a second socket failure; even a failure while reporting a `500` should not terminate the accept loop. A connection already broken cannot be guaranteed to receive an error message.
+
+## Keep the accept loop running
+
+`handle()` deals with protocol errors and unexpected failures inside request processing. The outer `main()` loop handles timeouts and socket failures, closes the connection, and moves on to the next client.
+
+Replace the existing accept-loop body starting with `conn, addr = server.accept()` in `main()` with this block:
+
+```python title="server.py"
+                conn, addr = server.accept()
+                with conn:
+                    print(f"connection from {addr}")
+                    conn.settimeout(5)  # Per blocking socket operation; not a total deadline.
+                    try:
+                        handle(conn)
+                    except TimeoutError:
+                        print("  timed out during a socket operation")
+                    except ConnectionError:
+                        print("  client disconnected or send failed")
+                    except OSError as exc:
+                        print(f"  socket error: {exc!r}")
+```
+
+`settimeout(5)` limits each blocking socket operation, not total request duration. A peer sending one byte periodically can hold up this single-threaded server longer than five seconds. The `TimeoutError` and `ConnectionError` branches close the connection and continue. Unexpected failures during request processing are logged by `handle()`; sending the error response can itself fail, so we catch that write error too.
+
+Do not infer that all runtime failures are recoverable. For example, the program does not attempt to recover from an exception in the listening socket or from a process-level failure.
+
+<Why>
+Why doesn't the 500 response say what went wrong?
+
+The error message is for us, not for the client. It can reveal file paths and details of our code that nobody outside should see. So the client gets only `500 Internal Server Error`, and the real error is printed in our terminal.
+</Why>
+
+<Think>
+Before running the fault-injection experiment, predict which bytes a client should receive when `serve()` raises an exception for a valid `HEAD /` request. Record your reasoning, then compare it with a raw-socket response.
+</Think>
+
+## Run The Server
+
+Here is the full file:
+
+```python title="server.py"
+import ipaddress
+import re
+import socket
+from pathlib import Path
+
+HOST = "127.0.0.1"
+PORT = 8000
+PUBLIC_DIR = (Path(__file__).parent / "public").resolve()
+
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+}
+
+# This is a deliberately small parser for our localhost HTTP/1.1 exercise.
+HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+HOST_VALUE = re.compile(
+    r"(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])"
+    r"(?::[0-9]{1,5})?"
+)
+
+class UnsupportedHTTPVersion(ValueError):
+    pass
+
+
+def valid_host(value: str) -> bool:
+    if HOST_VALUE.fullmatch(value) is None:
+        return False
+    if value.startswith("["):
+        closing = value.index("]")
+        try:
+            ipaddress.IPv6Address(value[1:closing])
+        except ValueError:
+            return False
+        port_part = value[closing + 1:]
+    else:
+        port_part = ":" + value.split(":", 1)[1] if ":" in value else ""
+    return not port_part or int(port_part[1:]) <= 65535
+
+
+def read_request(conn: socket.socket) -> bytes:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = conn.recv(1024)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def parse_request(raw: bytes) -> tuple[str, str, str, dict[str, str]]:
+    if b"\r\n\r\n" not in raw:
+        raise ValueError("incomplete request headers")
+
+    head = raw.split(b"\r\n\r\n", 1)[0].decode("iso-8859-1")
+    lines = head.split("\r\n")
+    parts = lines[0].split(" ")
+    if len(parts) != 3 or not all(parts):
+        raise ValueError("malformed request line")
+    method, target, version = parts
+
+    if HEADER_NAME.fullmatch(method) is None:
+        raise ValueError("invalid method")
+    if (not target.startswith("/") or "#" in target or "\\" in target
+            or any(ord(c) < 33 or ord(c) > 126 for c in target)):
+        raise ValueError("only origin-form request targets are supported")
+    if re.fullmatch(r"HTTP/[0-9]+\.[0-9]+", version) is None:
+        raise ValueError("malformed HTTP version")
+    if version != "HTTP/1.1":
+        raise UnsupportedHTTPVersion("only HTTP/1.1 is supported")
+
+    headers: dict[str, str] = {}
+    host_values: list[str] = []
+    for line in lines[1:]:
+        name, sep, value = line.partition(":")
+        if not sep or HEADER_NAME.fullmatch(name) is None:
+            raise ValueError("malformed header name")
+        value = value.strip(" \t")
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("invalid header value")
+        name = name.lower()
+        if name == "host":
+            host_values.append(value)
+        headers[name] = value
+
+    if len(host_values) != 1 or not valid_host(host_values[0]):
+        raise ValueError("HTTP/1.1 requires one valid Host header")
+    return method, target, version, headers
+
+
+def build_response(
+    status: int,
+    reason: str,
+    body: bytes,
+    content_type: str = "text/plain; charset=utf-8",
+    head_only: bool = False,
+) -> bytes:
+    head = (
+        f"HTTP/1.1 {status} {reason}\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("iso-8859-1")
+    return head if head_only else head + body
+
+
+def error_response(status: int, reason: str, head_only: bool = False) -> bytes:
+    body = f"{status} {reason}".encode("utf-8")
+    return build_response(status, reason, body, head_only=head_only)
+
+
+def serve(target: str) -> tuple[int, str, bytes, str]:
+    path = target.split("?", 1)[0]
+    if path == "/":
+        path = "/index.html"
+
+    file = (PUBLIC_DIR / path.lstrip("/")).resolve()
+    if PUBLIC_DIR not in file.parents or not file.is_file():
+        return 404, "Not Found", b"404 Not Found", "text/plain; charset=utf-8"
+
+    content_type = CONTENT_TYPES.get(file.suffix, "application/octet-stream")
+    return 200, "OK", file.read_bytes(), content_type
+
+
+def handle(conn: socket.socket) -> None:
+    method = None  # Preserve HEAD semantics if an error happens after parsing.
+    try:
+        raw = read_request(conn)
+        try:
+            method, target, version, headers = parse_request(raw)
+        except UnsupportedHTTPVersion as exc:
+            print(f"unsupported version: {exc}")
+            conn.sendall(error_response(505, "HTTP Version Not Supported"))
+            return
+        except ValueError as exc:
+            print(f"bad request: {exc}")
+            conn.sendall(error_response(400, "Bad Request"))
+            return
+
+        print(f"{method} {target} {version}")
+        for name, value in headers.items():
+            print(f"  {name}: {value}")
+
+        if method not in ("GET", "HEAD"):
+            print("  -> 501 Not Implemented")
+            conn.sendall(error_response(501, "Not Implemented"))
+            return
+
+        status, reason, body, content_type = serve(target)
+        print(f"  -> {status} {reason}")
+        response = build_response(
+            status, reason, body, content_type, head_only=(method == "HEAD")
+        )
+        conn.sendall(response)
+    except (TimeoutError, ConnectionError):
+        # The peer is silent, or the transport failed. main() closes this socket.
+        raise
+    except Exception as exc:
+        print(f"  server error: {exc!r}")
+        try:
+            conn.sendall(error_response(
+                500, "Internal Server Error", head_only=(method == "HEAD")
+            ))
+        except OSError as send_exc:
+            print(f"  could not send 500 response: {send_exc!r}")
+
+
+def main() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((HOST, PORT))
+        server.listen()
+        print(f"listening on http://{HOST}:{PORT} (Press Ctrl+c to stop)")
+
+        try:
+            while True:
+                conn, addr = server.accept()
+                with conn:
+                    print(f"connection from {addr}")
+                    conn.settimeout(5)  # Per blocking socket operation; not a total deadline.
+                    try:
+                        handle(conn)
+                    except TimeoutError:
+                        print("  timed out during a socket operation")
+                    except ConnectionError:
+                        print("  client disconnected or send failed")
+                    except OSError as exc:
+                        print(f"  socket error: {exc!r}")
+        except KeyboardInterrupt:
+            print("\nbye")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Start the server and test the cases below. The full code above supersedes the intermediate snippets. The terminal results are illustrative; connection ports and unrelated log details vary.
+
+**A broken request.** - This sends a request line with only one part:
+
+```bash title="Terminal"
+python3 -c "import socket; s=socket.create_connection(('127.0.0.1',8000)); s.sendall(b'hello\r\n\r\n'); print(s.recv(1024).decode())"
+```
+
+Expected output:
+
+```text
+HTTP/1.1 400 Bad Request
+Content-Type: text/plain; charset=utf-8
+Content-Length: 15
+Connection: close
+
+400 Bad Request
+```
+
+**An unsupported method.** - The `-X POST` option makes `curl` use `POST`:
+
+```bash title="Terminal"
+curl -i -X POST http://127.0.0.1:8000/
+```
+
+Expected output:
+
+```text
+HTTP/1.1 501 Not Implemented
+Content-Type: text/plain; charset=utf-8
+Content-Length: 19
+Connection: close
+
+501 Not Implemented
+```
+
+**Version and Host checks.** A valid HTTP/1.1 request must include exactly one valid `Host` header. Use a raw socket for each negative case:
+
+```bash title="Terminal"
+python3 -c "import socket; s=socket.create_connection(('127.0.0.1',8000)); s.sendall(b'GET / HTTP/1.1\r\n\r\n'); print(s.recv(1024).split(b'\r\n',1)[0].decode()); s.close()"
+python3 -c "import socket; s=socket.create_connection(('127.0.0.1',8000)); s.sendall(b'GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n'); print(s.recv(1024).split(b'\r\n',1)[0].decode()); s.close()"
+python3 -c "import socket; s=socket.create_connection(('127.0.0.1',8000)); s.sendall(b'GET / HTTP/99.99\r\nHost: example.test\r\n\r\n'); print(s.recv(1024).split(b'\r\n',1)[0].decode()); s.close()"
+```
+
+The first two should report `400 Bad Request`; the last should report `505 HTTP Version Not Supported`.
+
+**A silent client.** - This connects and says nothing for 8 seconds:
+
+```bash title="Terminal"
+python3 -c "import socket, time; s = socket.create_connection(('127.0.0.1', 8000)); time.sleep(8)"
+```
+
+After approximately five seconds of inactivity, the server terminal shows output similar to:
+```text
+connection from ('127.0.0.1', 44962)
+  timed out during a socket operation
+```
+
+**A failure in our own code.** - To cause one on purpose, add this line as the first line of `serve()`, then restart the server:
+
+```python title="server.py"
+    raise RuntimeError("boom")
+```
+
+Now ask for any page:
+
+```bash title="Terminal"
+curl -i http://127.0.0.1:8000/
+```
+
+Expected output:
+```text
+HTTP/1.1 500 Internal Server Error
+Content-Type: text/plain; charset=utf-8
+Content-Length: 25
+Connection: close
+
+500 Internal Server Error
+```
+
+The server terminal reports the exception; the 500 response does not disclose its traceback:
+
+```text
+connection from ('127.0.0.1', 54313)
+GET / HTTP/1.1
+  host: 127.0.0.1:8000
+  server error: RuntimeError('boom')
+```
+
+**HEAD error without a body.** While the `raise RuntimeError("boom")` line is present in `serve()`, run `curl -I http://127.0.0.1:8000/` and observe the `500` headers. `curl -I` alone cannot prove that zero body bytes arrived. For a raw-socket check, run the packaged `reference/check_acceptance.py` after restoring the normal `serve()` function; it tests HEAD and GET for an injected 500 without permanently changing `server.py`.
+
+Run the `curl` command again. The server answers again. It did not stop.
+
+Remove the `raise` line and restart the server before you continue.
 
 <WhatHappened>
-Errors now have scope. A malformed request becomes `400`, a controlled server-side failure becomes
-`500`, and the outer accept loop remains available for the next connection.
+The server validates an HTTP/1.1 request before using its target to select a file. Malformed syntax produces `400`, unsupported versions produce `505`, and unsupported methods produce `501`. Valid GET and HEAD requests use the same representation metadata, but HEAD sends no body, including for 404 and an injected 500.
+
+A socket timeout or disconnect closes that connection. An ordinary exception during request handling is logged and the server attempts a 500 response, but even that write can fail. Each successful iteration returns to `accept()`; this is controlled recovery, not general fault tolerance.
 </WhatHappened>
 
-## Add a timeout
-
-Before reading, limit how long one client can occupy the sequential server:
-
-```python
-connection.settimeout(5)
-```
-
-Catch `TimeoutError` with other client failures and return `408 Request Timeout` when possible.
-
-<Warning>
-Do not include internal exception details in public `500` response bodies. Log enough context on the
-server, but return a stable generic message to the client.
-</Warning>
-
 <TryIt>
-Use netcat to connect without sending the terminating blank line. Confirm that the connection times
-out and that the server accepts a normal curl request afterward.
+Keep the `raise RuntimeError("boom")` line in `serve()`, and change `except Exception as exc:` to `except ZeroDivisionError as exc:`. Restart the server and ask for a page.
+
+This time nothing catches the error, so the server stops with an error message in the terminal. That is what every unexpected error did before this lesson.
+
+Put everything back before you finish.
 </TryIt>
+
+## What You Built
+
+You started with an empty file, and you now have a working HTTP server.
+It opens a socket, accepts connections, reads HTTP/1.1 headers, sends responses, serves files from a constrained folder, and answers the error cases covered here. All of it fits in one Python file, and every part is something you wrote and understand.
+
+It is still a teaching server. A real one would also handle many clients at the same time, limit the size of requests, reuse connections, and more. 
+Next, verify the finished build and test an independent change.

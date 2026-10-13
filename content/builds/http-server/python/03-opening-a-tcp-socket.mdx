@@ -1,14 +1,57 @@
 ---
 title: Opening a TCP Socket
-description: Create, bind and listen on the operating-system socket behind the server.
+description: Create a socket, bind it to a port and start listening.
 ---
 
-A server socket is a file-descriptor-like handle managed by the operating system. We configure it,
-bind it to an address, and ask the kernel to queue incoming connections.
+On the last page, we saw that Python’s HTTP server is just a process waiting for connections, and that the operating system does the TCP work for it.
+
+Now we are going to build a TCP socket that can listen for connections.
+A TCP socket is an endpoint that allows two programs to communicate over a network. Let's build functionality for this TCP socket step by step.
+Our server needs to:
+- Create a socket.
+- Bind it to a port.
+- Listen for incoming connections.
+
+So go back to the `bytestack` folder from before and create a file for the server:
+
+```bash title="Terminal"
+touch server.py
+```
+
+If the `python3 -m http.server` command from before is still running, stop it with `Ctrl+C` first. Only one program can listen on a specific port at a time, and we are about to use port `8000` ourselves.
 
 ## Create the socket
 
-Replace `server.py` with:
+Python provides the built-in socket module. A socket is the object our program uses to talk to the network. The operating system owns it, which gives us access to the networking functionality. 
+
+Let's start with the simplest possible program, open the `server.py` file that we just created in your preferred text editor:
+
+```python title="server.py"
+import socket
+
+server = socket.socket(
+    socket.AF_INET,
+    socket.SOCK_STREAM
+)
+
+print("TCP socket created")
+```
+
+Save it and run `python3 server.py`. That's it, we created a TCP socket, although you will only get the print statement in the output.
+
+Before we modify our code, let's understand the two arguments we passed to `socket.socket()`:
+- `AF_INET` means the address family is IPv4, so addresses look like `127.0.0.1`.
+- `SOCK_STREAM` means a TCP stream: the reliable, ordered byte stream from the last page.
+
+At this point, we've only created a socket object. We haven't assigned it a port, started listening for connections, or accepted any requests. Nothing has touched the network yet.
+
+Let's fix this.
+
+## Bind the socket to a port
+
+A server needs a local address and port where clients can reach it. We can assign our socket to localhost on port 8000 using the `bind()` method.
+
+Open `server.py` file and modify our code:
 
 ```python title="server.py"
 import socket
@@ -16,42 +59,84 @@ import socket
 HOST = "127.0.0.1"
 PORT = 8000
 
+server = socket.socket(
+    socket.AF_INET,
+    socket.SOCK_STREAM
+)
+
+server.bind((HOST, PORT))
+
+print(f"Socket bound to {HOST}:{PORT}")
+```
+Note the double parentheses: `bind` takes one argument, which is a `(host, port)` pair.
+
+Run it with `python3 server.py`. If the port is available, you will see the print statement as the output. Otherwise, there is going to be an error saying that the address is already in use.
+
+`bind((HOST, PORT))` asks the operating system to reserve that local endpoint for this socket. Only one active listener can normally own the same address and port at a time.
+
+<Warning>
+`127.0.0.1` is the loopback address, so only programs on your own machine can connect. It matches the `--bind 127.0.0.1` flag we used on the intro page. An address of `0.0.0.0` would listen on every network interface, which is exactly what we want to avoid for a learning server.
+</Warning>
+
+The port is just a number we pick. Ports below 1024 are reserved on many systems and need administrator rights, so we use `8000`.
+
+<TryIt>
+Change PORT to 8888 and run it again. The printed message should show the new port.
+</TryIt>
+
+Notice that we haven't started listening for connections yet. Binding a socket reserves its local endpoint, but it doesn't make the socket ready to accept incoming TCP connections.
+
+## Begin listening
+
+Now that our socket is bound to a port, we can tell the operating system that it should listen for incoming TCP connections.
+
+We do this by calling `listen()`:
+
+```python title="server.py"
+import socket
+
+HOST = "127.0.0.1"
+PORT = 8000
+
+server = socket.socket(
+    socket.AF_INET,
+    socket.SOCK_STREAM
+)
+
+server.bind((HOST, PORT))
+server.listen()
+
+print(f"Server is listening on {HOST}:{PORT}")
+```
+Run the code using `python3 server.py`.
+`bind` reserved the address, and `listen` switches the socket on. From this moment the operating system will complete the TCP handshake for anyone who connects to `127.0.0.1:8000`, and hold those connections in a queue until our program asks for them.
+
+The program exits right away, so there is nothing to connect to yet. We’ll keep it alive in a moment.
+
+However, our program still doesn't accept those connections or communicate with clients. That's the step we are going to learn in next page.
+
+## Putting it all together
+
+Here is the whole file. We wrap the socket code in `main()` function using `with` block so it is closed automatically when the program ends.
+
+```python title="server.py"
+import socket
+
+HOST = "127.0.0.1"
+PORT = 8000
 
 def main() -> None:
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((HOST, PORT))
-    server.listen()
-
-    print(f"listening on http://{HOST}:{PORT}")
-    input("press Enter to stop")
-    server.close()
-
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind((HOST, PORT))
+        server.listen()
+        print(f"listening on http://{HOST}:{PORT}")
+        input("Press Enter to stop the server...\n")
 
 if __name__ == "__main__":
     main()
 ```
 
-`AF_INET` selects IPv4 addresses. `SOCK_STREAM` selects a reliable byte stream, which means TCP for
-this address family.
-
-## Bind an address
-
-`bind((HOST, PORT))` asks the operating system to deliver connections for that local endpoint to this
-socket. Only one active listener can normally own the same address and port at a time.
-
-`SO_REUSEADDR` makes local restarts less frustrating when an earlier connection is still passing
-through TCP's cleanup states. It does not allow arbitrary processes to share the listener.
-
-## Begin listening
-
-`listen()` turns the socket into a passive server socket. The kernel can now queue completed connection
-attempts until our program accepts them.
-
-<Note>
-Binding to `127.0.0.1` accepts only local connections. Binding to `0.0.0.0` listens on all IPv4
-interfaces and can expose the process to your network. Keep the loopback address for this tutorial.
-</Note>
+The `input(...)` line is only a placeholder that keeps the program alive so we can poke at it. If it were missing, the program would reach the end and exit, taking the socket with it. On the next page we replace it with a loop that accepts connections.
 
 Run the program, then open a second terminal:
 
@@ -59,15 +144,26 @@ Run the program, then open a second terminal:
 curl -v --max-time 2 http://127.0.0.1:8000/
 ```
 
-The TCP connection can reach the socket, but curl times out because our process never accepts it and
-never sends an HTTP response.
+The TCP connection can reach the socket, but curl times out because our process never accepts it and never sends an HTTP response.
+Press Enter to stop the `server.py` program.
 
 <WhatHappened>
-The kernel completed the TCP handshake and placed the connection in the listener's queue. `listen()`
-made arrival possible; it did not read or process the connection for us.
+The operating system completed the TCP handshake and placed the connection in the listener's queue. `listen()` made arrival possible; it did not read or process the connection for us.
 </WhatHappened>
 
+
 <TryIt>
-Start a second copy of the server while the first is running. The second process should fail with
-“address already in use,” demonstrating that the endpoint is already owned.
+Cause the error on purpose. In one terminal, start the built-in server again:
+```bash title="Terminal"
+python3 -m http.server 8000 --bind 127.0.0.1
+```
+ 
+In a second terminal, run `python3 server.py`. It fails when it reaches `bind`. On Linux the last line of the error is:
+ 
+```text
+OSError: [Errno 98] Address already in use
+```
+ 
+(macOS and Windows use different error numbers and wording.)
+Read it: which line of your code raised it? Then stop the built-in server and run yours again, or change `PORT` to `8001`.
 </TryIt>
